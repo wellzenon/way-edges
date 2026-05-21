@@ -1,5 +1,6 @@
-use niri_ipc::{socket::SOCKET_PATH_ENV, Reply, Workspace};
+use niri_ipc::{socket::SOCKET_PATH_ENV, Reply, Window, WindowLayout, Workspace};
 use serde::Deserialize;
+use serde_jsonrc::Value;
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -30,6 +31,32 @@ pub enum Event {
         /// focused, but they may remain active on their respective outputs.
         #[allow(dead_code)]
         focused: bool,
+    },
+    // Dock events
+    WindowsChanged {
+        windows: Vec<Window>,
+    },
+    WindowOpenedOrChanged {
+        window: Window,
+    },
+    WindowClosed {
+        id: u64,
+    },
+    WindowFocusChanged {
+        id: Option<u64>,
+    },
+
+    // Se você precisa que a dock reaja a mudanças puramente de layout e urgência:
+    WindowLayoutsChanged {
+        // Usamos um 'catch-all' genérico aqui para que o Serde não entre em pânico (panic)
+        // caso o JSON contenha campos que não mapeamos estritamente.
+        changes: Vec<(u64, WindowLayout)>,
+        #[serde(flatten)]
+        _payload: Option<Value>,
+    },
+    WindowUrgencyChanged {
+        id: u64,
+        is_urgent: bool,
     },
 }
 

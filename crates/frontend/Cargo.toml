@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio.workspace = true
 cairo-rs.workspace = true
 educe.workspace = true
 paste.workspace = true
@@ -26,3 +27,7 @@ interval-task = "0.3.4"
 
 chrono = "0.4.38"
 chrono-tz = "0.10.0"
+
+niri-ipc = "25.5.0"
+resvg = { version = "0.45.0", default-features = false }
+linicon = "2.2"

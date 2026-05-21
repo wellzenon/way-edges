@@ -1,12 +1,10 @@
-mod connection;
-
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, AtomicPtr},
 };
 
+use crate::niri::connection::{Connection, Event};
 use config::def::widgets::workspace::NiriConf;
-use connection::{Connection, Event};
 use tokio::io;
 
 use crate::runtime::get_backend_runtime_handle;
@@ -109,7 +107,7 @@ fn sort_workspaces(v: Vec<niri_ipc::Workspace>) -> HashMap<String, Vec<niri_ipc:
     a
 }
 
-async fn process_event(e: Event) {
+pub async fn process_event(e: Event) {
     log::debug!("niri event: {e:?}");
 
     let ctx = get_niri_ctx();
@@ -120,6 +118,7 @@ async fn process_event(e: Event) {
             DataCache::new(sort_workspaces(data))
         }
         Event::WorkspacesChanged { workspaces } => DataCache::new(sort_workspaces(workspaces)),
+        _ => return,
     };
 
     ctx.call();
@@ -206,45 +205,8 @@ fn start_listener() {
         std::sync::atomic::Ordering::Relaxed,
     );
     CTX_INITED.store(true, std::sync::atomic::Ordering::Relaxed);
-    get_backend_runtime_handle().spawn(async {
-        let wp = get_workspaces().await.expect("Failed to get workspaces");
-        let ctx = get_niri_ctx();
-        ctx.data = DataCache::new(sort_workspaces(wp));
 
-        // Perform the unconditional sync
-        ctx.workspace_ctx
-            .sync_all_widgets_unconditionally(|output, conf_data| {
-                ctx.data
-                    .get_workspace_data(output, conf_data.preserve_empty)
-            });
-
-        // It's good practice to call the main update logic afterwards,
-        // which will respect focused_only for any subsequent updates.
-        ctx.call();
-    });
-
-    get_backend_runtime_handle().spawn(async {
-        let mut l = Connection::make_connection()
-            .await
-            .expect("Failed to connect to niri socket")
-            .to_listener()
-            .await
-            .expect("Failed to send EventStream request");
-
-        let mut buf = String::new();
-        loop {
-            match l.next_event(&mut buf).await {
-                Ok(Some(e)) => process_event(e).await,
-                Ok(None) => {}
-                Err(err) => {
-                    log::error!("error reading from event stream: {err}");
-                    break;
-                }
-            }
-            buf.clear();
-        }
-        log::error!("niri event stream closed")
-    });
+    crate::niri::init_and_sync(true, false);
 }
 
 pub fn register_niri_event_callback(cb: WorkspaceCB<NiriConf>) -> WorkspaceHandler {
@@ -289,7 +251,7 @@ impl NiriWorkspaceHandler {
                 return;
             };
 
-            connection::Connection::make_connection()
+            crate::niri::connection::Connection::make_connection()
                 .await
                 .expect("Failed to connect to niri socket")
                 .push_request(niri_ipc::Request::Action(

@@ -94,6 +94,12 @@ fn init_boxed_widgets(window: &mut WidgetBuilder, mut box_conf: BoxConfig) -> Bo
                     widgets::tray::init_widget(&mut box_temporary_ctx, tray_config)
                 )
             }
+            BoxedWidget::Dock(dock_config) => {
+                boxed!(
+                    box_temporary_ctx,
+                    widgets::dock::init_widget(&mut box_temporary_ctx, dock_config)
+                )
+            }
         };
 
         builder.add(boxed_widget_context.make_rc(), (w.index[0], w.index[1]));
