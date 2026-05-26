@@ -11,7 +11,7 @@ use crate::def::shared::{
 
 use super::Align;
 
-#[derive(Debug, Default, Clone, DecodeScalar, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Default, Copy, Eq, Clone, DecodeScalar, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShowTitles {
     #[default]

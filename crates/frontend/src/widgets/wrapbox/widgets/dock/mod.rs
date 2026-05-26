@@ -4,6 +4,7 @@ pub mod layout;
 use crate::mouse_state::MouseEvent;
 use crate::widgets::wrapbox::box_traits::BoxedWidget;
 use crate::widgets::wrapbox::BoxTemporaryCtx;
+use backend::niri::IconCacheKey;
 use cairo::{Format, ImageSurface};
 use config::def::widgets::wrapbox::dock::DockConfig;
 use cosmic_text::{FontSystem, SwashCache};
@@ -31,7 +32,8 @@ pub struct DockCtx {
     pub last_layout: DockLayout, // <-- Guardamos a última matemática na memória
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
-    pub icon_surface_cache: std::collections::HashMap<String, ImageSurface>,
+    pub icon_surface_cache: std::collections::HashMap<IconCacheKey, ImageSurface>,
+    pub glyph_cache: HashMap<cosmic_text::CacheKey, ImageSurface>,
 }
 
 // 2. A IMPLEMENTAÇÃO DO MOTOR DE RENDERIZAÇÃO
@@ -42,9 +44,9 @@ impl BoxedWidget for DockCtx {
         // (O try_read é perfeito aqui para não bloquear o loop de UI do Wayland)
 
         let workspaces = if let Ok(state) = backend::dock::niri::DOCK_STATE.try_read() {
-            state.workspaces.values().cloned().collect::<Vec<_>>()
+            state.workspaces.clone()
         } else {
-            Vec::new()
+            std::collections::BTreeMap::new()
         };
 
         let mut windows = if let Ok(state) = backend::dock::niri::DOCK_STATE.try_read() {
@@ -54,15 +56,21 @@ impl BoxedWidget for DockCtx {
         };
 
         windows.sort_by_key(|w| {
-            (
-                w.workspace_id,
-                w.is_floating,
-                w.layout.pos_in_scrolling_layout,
-            )
+            let ws_idx = workspaces
+                .get(&w.workspace_id.unwrap_or_default())
+                .map(|ws| ws.idx)
+                .unwrap_or_default();
+
+            (ws_idx, w.is_floating, w.layout.pos_in_scrolling_layout)
         });
 
         // 2. Calculamos o Layout Matemático
-        self.last_layout = DockLayout::calculate(windows, workspaces, &self.widget.config);
+        self.last_layout = DockLayout::calculate(
+            &windows,
+            &workspaces,
+            &self.widget.config,
+            &mut self.icon_surface_cache,
+        );
 
         // 3. Alocamos o Buffer de Memória da Placa de Vídeo
         let width = self.last_layout.total_width.max(1.0) as i32; // Evita falha do Cairo com largura 0
@@ -84,9 +92,9 @@ impl BoxedWidget for DockCtx {
             &surface,
             &self.last_layout,
             &self.widget.config,
-            &mut self.icon_surface_cache,
             &mut self.font_system,
             &mut self.swash_cache,
+            &mut self.glyph_cache,
         );
 
         surface
@@ -112,7 +120,7 @@ impl BoxedWidget for DockCtx {
                         "action",
                         "focus-window",
                         "--id",
-                        &item.window.id.to_string(),
+                        &item.id.to_string(),
                     ])
                     .spawn();
                 return true;
@@ -123,7 +131,7 @@ impl BoxedWidget for DockCtx {
                         "action",
                         "close-window",
                         "--id",
-                        &item.window.id.to_string(),
+                        &item.id.to_string(),
                     ])
                     .spawn();
                 return true;
@@ -167,5 +175,6 @@ pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
         font_system: cosmic_text::FontSystem::new(),
         swash_cache: cosmic_text::SwashCache::new(),
         icon_surface_cache: HashMap::new(),
+        glyph_cache: HashMap::new(),
     }
 }

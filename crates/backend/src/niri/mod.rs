@@ -11,8 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static LISTENER_STARTED: AtomicBool = AtomicBool::new(false);
 pub static REDRAW_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// ORQUESTRADOR DE INICIALIZAÇÃO UNIVERSAL
-/// Pode ser chamado simultaneamente por múltiplos módulos.
 pub fn init_and_sync(sync_workspaces: bool, sync_windows: bool) {
     get_backend_runtime_handle().spawn(async move {
         if sync_workspaces {
@@ -57,9 +55,6 @@ async fn start_central_listener_loop() {
     loop {
         match l.next_event(&mut buf).await {
             Ok(Some(e)) => {
-                // ==========================================
-                // O ROTEADOR MULTIPLEXADOR
-                // ==========================================
                 match &e {
                     // Rota 1: Workspaces (Sempre ativo)
                     Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
@@ -107,7 +102,15 @@ async fn start_central_listener_loop() {
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock}; // ou std::sync::OnceLock
+use std::sync::{Arc, RwLock};
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct IconCacheKey {
+    pub app_id: String,
+    pub size: u32,
+    pub theme: Option<String>,
+    pub fallback: Option<String>,
+}
 
 #[derive(Clone)]
 pub enum IconStatus {
@@ -125,27 +128,39 @@ use crate::dock::niri::ICON_CONFIG;
 use crate::runtime::get_backend_runtime_handle;
 
 // Cache global mapeando app_id para o status do ícone
-pub static ICON_CACHE: Lazy<Arc<RwLock<HashMap<String, IconStatus>>>> =
+pub static ICON_CACHE: Lazy<Arc<RwLock<HashMap<IconCacheKey, IconStatus>>>> =
     Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 fn process_window_opened(window: &Window) {
     let app_id = window.app_id.clone().unwrap_or_default();
 
+    let (theme, fallback, size) = {
+        let cfg = ICON_CONFIG.read().unwrap();
+        (cfg.theme.clone(), cfg.fallback.clone(), cfg.size as u32)
+    };
+
     let mut cache = ICON_CACHE.write().unwrap();
 
+    let icon = IconCacheKey {
+        app_id: app_id.clone(),
+        theme: theme,
+        size: size,
+        fallback: fallback,
+    };
+
     // Se o ícone não está no cache, inicia o processo de extração
-    if !cache.contains_key(&app_id) {
-        cache.insert(app_id.clone(), IconStatus::Loading);
+    if !cache.contains_key(&icon) {
+        cache.insert(icon.clone(), IconStatus::Loading);
 
         // Dispara a carga pesada para o pool de threads do Tokio
         get_backend_runtime_handle().spawn(async move {
-            load_and_rasterize_icon_async(&app_id).await;
+            load_and_rasterize_icon_async(&icon).await;
         });
     }
 }
 
-async fn image_sync(app_id: &str, theme: Option<String>, size: u32) -> Option<(Vec<u8>, i32, i32)> {
-    let app_id_owned = app_id.to_string();
+async fn image_sync(icon: &IconCacheKey) -> Option<(Vec<u8>, i32, i32)> {
+    let (app_id_owned, theme, size) = { (icon.app_id.to_string(), icon.theme.clone(), icon.size) };
 
     tokio::task::spawn_blocking(move || {
         // Rota A: É um caminho absoluto no disco (Usado primariamente pelo fallback)
@@ -189,10 +204,11 @@ async fn image_sync(app_id: &str, theme: Option<String>, size: u32) -> Option<(V
             .copied()
             .collect();
 
-        let mut names_to_try = vec![app_id_owned];
+        let mut names_to_try = vec![app_id_owned.to_string()];
         if !names_to_try.contains(&app_id_lower) {
-            names_to_try.push(app_id_lower);
+            names_to_try.push(app_id_lower.clone());
         }
+
         if !names_to_try.contains(&app_id_short) {
             names_to_try.push(app_id_short);
         }
@@ -248,12 +264,9 @@ async fn image_sync(app_id: &str, theme: Option<String>, size: u32) -> Option<(V
     .unwrap_or(None)
 }
 
-async fn load_and_rasterize_icon_async(app_id: &str) {
+async fn load_and_rasterize_icon_async(icon: &IconCacheKey) {
     // Extract icon configs
-    let (theme, fallback, size) = {
-        let cfg = ICON_CONFIG.read().unwrap();
-        (cfg.theme.clone(), cfg.fallback.clone(), cfg.size as u32)
-    };
+    let (theme, fallback, size) = { (icon.theme.clone(), icon.fallback.clone(), icon.size) };
 
     // set redraw function used when returning
     let trigger_redraw = || {
@@ -261,9 +274,9 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
     };
 
     // try to get app icon
-    let pixel_data = image_sync(app_id, theme, size).await;
+    let pixel_data = image_sync(&icon).await;
 
-    let fallback_to_fetch: String;
+    let fallback_to_fetch: IconCacheKey;
 
     {
         // open icon cache
@@ -272,7 +285,7 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
         // Return 1: got icon sucessfully
         if let Some((pixels, width, height)) = pixel_data {
             cache.insert(
-                app_id.to_string(),
+                icon.clone(),
                 IconStatus::Ready {
                     pixels: pixels.into(),
                     width,
@@ -284,16 +297,23 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
         }
 
         // Return 2: check for fallback string if is path to an image
-        let fb_str = match fallback {
+        let fb_str = match &fallback {
             Some(path_str) if Path::new(&path_str).is_file() => path_str,
             _ => {
-                cache.insert(app_id.to_string(), IconStatus::NotFound);
+                cache.insert(icon.clone(), IconStatus::NotFound);
                 return trigger_redraw();
             }
         };
 
+        let fb_icon = IconCacheKey {
+            app_id: fb_str.clone(),
+            size,
+            theme,
+            fallback,
+        };
+
         // try to get fallback icon
-        let fallback_data = match cache.get(&fb_str) {
+        let fallback_data = match cache.get(&fb_icon) {
             Some(IconStatus::Ready {
                 pixels,
                 width,
@@ -306,7 +326,7 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
         // Return 3: points app icon cache to fallback icon
         if let Some((pixels_clone, w, h, ..)) = fallback_data {
             cache.insert(
-                app_id.to_string(),
+                icon.clone(),
                 IconStatus::Ready {
                     pixels: pixels_clone,
                     width: w,
@@ -318,12 +338,12 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
         }
 
         // if no fallback icon, set app cache to Loading
-        cache.insert(app_id.to_string(), IconStatus::Loading);
+        cache.insert(icon.clone(), IconStatus::Loading);
 
-        fallback_to_fetch = fb_str;
+        fallback_to_fetch = fb_icon;
     }
 
-    let fb_pixel_data = image_sync(&fallback_to_fetch, None, size).await;
+    let fb_pixel_data = image_sync(&fallback_to_fetch).await;
 
     // open icon cache
     let mut cache = ICON_CACHE.write().unwrap();
@@ -337,11 +357,11 @@ async fn load_and_rasterize_icon_async(app_id: &str) {
                 height,
                 fallback: true,
             };
-            cache.insert(fallback_to_fetch, icon_status.clone());
-            cache.insert(app_id.to_string(), icon_status);
+            cache.insert(fallback_to_fetch.clone(), icon_status.clone());
+            cache.insert(icon.clone(), icon_status);
         }
         None => {
-            cache.insert(app_id.to_string(), IconStatus::NotFound);
+            cache.insert(icon.clone(), IconStatus::NotFound);
         }
     }
     trigger_redraw();
