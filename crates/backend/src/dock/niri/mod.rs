@@ -1,50 +1,32 @@
 use crate::niri::connection::Event;
+use crate::niri::NiriManager;
 use config::def::widgets::wrapbox::dock::DockConfig;
-use niri_ipc::{Window, Workspace};
+use niri_ipc::{Output, Window, Workspace};
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, RwLock};
-use tokio::sync::watch;
+use tokio::sync::mpsc::Sender;
 
 #[derive(Default)]
 pub struct NiriDockState {
     pub windows: BTreeMap<u64, Window>,
     pub workspaces: BTreeMap<u64, Workspace>,
+
+    // TODO golbal dock with all outputs odered by logical position
+    pub outputs: BTreeMap<u64, Output>,
 }
 
-#[derive(Default)]
-pub struct IconResolutionConfig {
-    pub theme: Option<String>,
-    pub fallback: Option<String>,
-    pub size: f64,
-}
-
+/// Dock Global state
 pub static DOCK_STATE: LazyLock<Arc<RwLock<NiriDockState>>> =
     LazyLock::new(|| Arc::new(RwLock::new(NiriDockState::default())));
 
-pub static DOCK_NOTIFIER: LazyLock<(watch::Sender<()>, watch::Receiver<()>)> =
-    LazyLock::new(|| watch::channel(()));
-
-pub static ICON_CONFIG: RwLock<IconResolutionConfig> = RwLock::new(IconResolutionConfig {
-    theme: None,
-    fallback: None,
-    size: 48.0,
-});
-
-fn configure_icon_resolution(config: &DockConfig) {
-    let mut icon_config = ICON_CONFIG.write().unwrap();
-    icon_config.theme = config.window_button.icon_theme.clone();
-    icon_config.fallback = config.window_button.icon_fallback.clone();
-    icon_config.size = config.window_button.icon_size;
+pub fn register_dock_listener(
+    redraw_tx: Sender<()>,
+    config: &DockConfig,
+) -> Option<Arc<NiriManager>> {
+    crate::niri::init_and_sync(true, true, Some(redraw_tx), Some(config))
 }
 
-pub fn register_dock_listener(config: &DockConfig) {
-    crate::dock::DOCK_ENABLED.store(true, Ordering::Relaxed);
-    configure_icon_resolution(config);
-    crate::niri::init_and_sync(true, true);
-}
-
-pub async fn process_event(e: Event) {
+pub async fn process_event(e: Event, redraw_tx: &Option<Sender<()>>) {
     let mut state_changed = false;
 
     {
@@ -128,8 +110,9 @@ pub async fn process_event(e: Event) {
         }
     }
 
-    // Dispara o pulso pelo canal Tokio apenas se houve alteração real
     if state_changed {
-        let _ = DOCK_NOTIFIER.0.send(());
+        if let Some(tx) = redraw_tx {
+            let _ = tx.try_send(());
+        }
     }
 }

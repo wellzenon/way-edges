@@ -1,118 +1,27 @@
 pub mod connection;
 
 use ::std::path::Path;
+use config::def::widgets::wrapbox::dock::DockConfig;
 use connection::{Connection, Event};
 use image::imageops::FilterType;
 use niri_ipc::Window;
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static LISTENER_STARTED: AtomicBool = AtomicBool::new(false);
-pub static REDRAW_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn init_and_sync(sync_workspaces: bool, sync_windows: bool) {
-    get_backend_runtime_handle().spawn(async move {
-        if sync_workspaces {
-            if let Ok(mut l) = Connection::make_connection().await {
-                if let Ok(Ok(niri_ipc::Response::Workspaces(ws))) =
-                    l.push_request(niri_ipc::Request::Workspaces).await
-                {
-                    crate::dock::niri::process_event(Event::WorkspacesChanged { workspaces: ws })
-                        .await;
-                }
-            }
-        }
-
-        if sync_windows {
-            if let Ok(mut l) = Connection::make_connection().await {
-                if let Ok(Ok(niri_ipc::Response::Windows(wins))) =
-                    l.push_request(niri_ipc::Request::Windows).await
-                {
-                    for win in &wins {
-                        process_window_opened(win);
-                    }
-                    crate::dock::niri::process_event(Event::WindowsChanged { windows: wins }).await;
-                }
-            }
-        }
-
-        if !LISTENER_STARTED.swap(true, Ordering::Relaxed) {
-            start_central_listener_loop().await;
-        }
-    });
-}
-
-async fn start_central_listener_loop() {
-    let mut l = Connection::make_connection()
-        .await
-        .expect("Failed to connect to niri socket")
-        .to_listener()
-        .await
-        .expect("Failed to send EventStream request");
-
-    let mut buf = String::new();
-    loop {
-        match l.next_event(&mut buf).await {
-            Ok(Some(e)) => {
-                match &e {
-                    // Rota 1: Workspaces (Sempre ativo)
-                    Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
-                        crate::workspace::niri::process_event(e).await;
-                    }
-
-                    Event::WindowOpenedOrChanged { window } => {
-                        process_window_opened(&window);
-
-                        if crate::dock::DOCK_ENABLED.load(Ordering::Relaxed) {
-                            crate::dock::niri::process_event(e).await;
-                        }
-                    }
-                    Event::WindowsChanged { windows } => {
-                        if crate::dock::DOCK_ENABLED.load(Ordering::Relaxed) {
-                            for win in windows {
-                                process_window_opened(win);
-                            }
-                            crate::dock::niri::process_event(Event::WindowsChanged {
-                                windows: windows.clone(),
-                            })
-                            .await;
-                        }
-                    }
-                    // Rota 2: Janelas (Custo Zero Condicional)
-                    Event::WindowClosed { .. }
-                    | Event::WindowLayoutsChanged { .. }
-                    | Event::WindowUrgencyChanged { .. }
-                    | Event::WindowFocusChanged { .. } => {
-                        if crate::dock::DOCK_ENABLED.load(Ordering::Relaxed) {
-                            crate::dock::niri::process_event(e).await;
-                        }
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                log::error!("error reading from niri event stream: {err}");
-                break;
-            }
-        }
-        buf.clear();
-    }
-}
-
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
+
+use crate::runtime::get_backend_runtime_handle;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct IconCacheKey {
+pub struct IconKey {
     pub app_id: String,
     pub size: u32,
     pub theme: Option<String>,
     pub fallback: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum IconStatus {
     Loading,
     Ready {
@@ -124,254 +33,359 @@ pub enum IconStatus {
     NotFound,
 }
 
-use crate::dock::niri::ICON_CONFIG;
-use crate::runtime::get_backend_runtime_handle;
+/// Niri Manager:
+/// - signals the dock is enabled
+/// - carries the redraw sender signal
+/// - process icons and populate tha backend icon cache.
+/// Bit much?! heh
+#[derive(Debug)]
+pub struct NiriManager {
+    pub icon_cache: Arc<RwLock<HashMap<IconKey, IconStatus>>>,
+    redraw_tx: mpsc::Sender<()>,
+    icon_size: u32,
+    icon_theme: Option<String>,
+    icon_fallback: Option<String>,
+}
 
-// Cache global mapeando app_id para o status do ícone
-pub static ICON_CACHE: Lazy<Arc<RwLock<HashMap<IconCacheKey, IconStatus>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
-
-fn process_window_opened(window: &Window) {
-    let app_id = window.app_id.clone().unwrap_or_default();
-
-    let (theme, fallback, size) = {
-        let cfg = ICON_CONFIG.read().unwrap();
-        (cfg.theme.clone(), cfg.fallback.clone(), cfg.size as u32)
-    };
-
-    let mut cache = ICON_CACHE.write().unwrap();
-
-    let icon = IconCacheKey {
-        app_id: app_id.clone(),
-        theme: theme,
-        size: size,
-        fallback: fallback,
-    };
-
-    // Se o ícone não está no cache, inicia o processo de extração
-    if !cache.contains_key(&icon) {
-        cache.insert(icon.clone(), IconStatus::Loading);
-
-        // Dispara a carga pesada para o pool de threads do Tokio
-        get_backend_runtime_handle().spawn(async move {
-            load_and_rasterize_icon_async(&icon).await;
-        });
+impl NiriManager {
+    pub fn new(redraw_tx: mpsc::Sender<()>, config: &DockConfig) -> Self {
+        Self {
+            icon_cache: Arc::new(RwLock::new(HashMap::new())),
+            redraw_tx,
+            icon_size: config.window_button.icon_size as u32,
+            icon_theme: config.window_button.icon_theme.clone(),
+            icon_fallback: config.window_button.icon_fallback.clone(),
+        }
     }
-}
 
-async fn image_sync(icon: &IconCacheKey) -> Option<(Vec<u8>, i32, i32)> {
-    let (app_id_owned, theme, size) = { (icon.app_id.to_string(), icon.theme.clone(), icon.size) };
+    /// Gets newly opened window icon
+    pub async fn process_window_opened(&self, window: &Window) {
+        let app_id = window.app_id.clone().unwrap_or_default();
 
-    tokio::task::spawn_blocking(move || {
-        // Rota A: É um caminho absoluto no disco (Usado primariamente pelo fallback)
-        let path = Path::new(&app_id_owned);
-        if path.is_file() {
-            let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            let raw_pixels = match extension {
-                "svg" => rasterize_svg(path, size),
-                "png" | "jpg" | "jpeg" => decode_and_resize_raster(path, size),
-                _ => None,
-            };
+        let icon_key = IconKey {
+            app_id,
+            theme: self.icon_theme.clone(),
+            size: self.icon_size,
+            fallback: self.icon_fallback.clone(),
+        };
 
-            if let Some(mut pixels) = raw_pixels {
-                swizzle_rgba_to_bgra(&mut pixels);
-                return Some((pixels, size as i32, size as i32));
-            }
-            return None;
+        let mut cache = self.icon_cache.write().unwrap();
+
+        if !cache.contains_key(&icon_key) {
+            cache.insert(icon_key.clone(), IconStatus::Loading);
+
+            let cache_clone = Arc::clone(&self.icon_cache);
+            let redraw_tx_clone = self.redraw_tx.clone();
+
+            get_backend_runtime_handle().spawn(async move {
+                Self::load_and_rasterize_icon_async(cache_clone, icon_key, redraw_tx_clone).await;
+            });
         }
+    }
 
-        // Rota B: É um ID abstrato. Gerar variantes para o linicon.
-        // Ex: "org.gnome.Nautilus" vira ["org.gnome.Nautilus", "org.gnome.nautilus", "nautilus"]
-        let app_id_lower = app_id_owned.to_lowercase();
-        let app_id_short = app_id_lower
-            .split('.')
-            .last()
-            .unwrap_or(&app_id_lower)
-            .to_string();
+    /// Load cached icons or fallback
+    async fn load_and_rasterize_icon_async(
+        cache_arc: Arc<RwLock<HashMap<IconKey, IconStatus>>>,
+        icon: IconKey,
+        redraw_tx: mpsc::Sender<()>,
+    ) {
+        let trigger_redraw = || {
+            let _ = redraw_tx.try_send(());
+        };
 
-        const STANDARD_SIZES: [u16; 21] = [
-            8, 16, 20, 22, 24, 28, 32, 36, 42, 44, 48, 64, 72, 96, 128, 150, 192, 256, 384, 512,
-            1024,
-        ];
-
-        let partition_point = STANDARD_SIZES.partition_point(|&x| x < size as u16);
-
-        // Array ordered from the next size bigger from de target size until the max
-        // and then ordered from the next size smaller to the minimum
-        let ordered_sizes: Vec<u16> = STANDARD_SIZES[partition_point..]
-            .iter()
-            .chain(STANDARD_SIZES[..partition_point].iter().rev())
-            .copied()
-            .collect();
-
-        let mut names_to_try = vec![app_id_owned.to_string()];
-        if !names_to_try.contains(&app_id_lower) {
-            names_to_try.push(app_id_lower.clone());
-        }
-
-        if !names_to_try.contains(&app_id_short) {
-            names_to_try.push(app_id_short);
-        }
-
-        for name in names_to_try {
-            for size_u16 in ordered_sizes.clone() {
-                let mut queries = Vec::new();
-
-                if let Some(ref t) = theme {
-                    queries.push(
-                        linicon::lookup_icon(&name)
-                            .from_theme(t)
-                            .with_size(size_u16),
-                    );
-                }
-                queries.push(linicon::lookup_icon(&name).with_size(size_u16));
-                queries.push(
-                    linicon::lookup_icon(&name)
-                        .from_theme("hicolor")
-                        .with_size(size_u16),
-                );
-
-                for query in queries {
-                    for icon in query.into_iter().filter_map(Result::ok) {
-                        if !icon.path.exists() {
-                            continue;
-                        }
-
-                        let extension =
-                            icon.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                        let raw_pixels = match extension {
-                            "svg" => rasterize_svg(&icon.path, size),
-                            "png" | "jpg" | "jpeg" => decode_and_resize_raster(&icon.path, size),
-                            _ => continue,
-                        };
-                        match raw_pixels {
-                            Some(mut pixels) => {
-                                swizzle_rgba_to_bgra(&mut pixels);
-                                return Some((pixels, size as i32, size as i32));
-                            }
-                            None => {
-                                continue; // Tenta o próximo ícone da lista
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    })
-    .await
-    .unwrap_or(None)
-}
-
-async fn load_and_rasterize_icon_async(icon: &IconCacheKey) {
-    // Extract icon configs
-    let (theme, fallback, size) = { (icon.theme.clone(), icon.fallback.clone(), icon.size) };
-
-    // set redraw function used when returning
-    let trigger_redraw = || {
-        REDRAW_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
-    };
-
-    // try to get app icon
-    let pixel_data = image_sync(&icon).await;
-
-    let fallback_to_fetch: IconCacheKey;
-
-    {
-        // open icon cache
-        let mut cache = ICON_CACHE.write().unwrap();
-
-        // Return 1: got icon sucessfully
-        if let Some((pixels, width, height)) = pixel_data {
-            cache.insert(
-                icon.clone(),
+        // 1st: look for the main icon
+        if let Some((pixels, width, height)) = Self::fetch_icon_pixels(&icon).await {
+            Self::update_cache_status(
+                &cache_arc,
+                icon,
                 IconStatus::Ready {
                     pixels: pixels.into(),
                     width,
                     height,
                     fallback: false,
                 },
-            );
+            )
+            .await;
             return trigger_redraw();
         }
 
-        // Return 2: check for fallback string if is path to an image
-        let fb_str = match &fallback {
-            Some(path_str) if Path::new(&path_str).is_file() => path_str,
+        // 2nd: valodate fallback icon
+        let fallback_str = match &icon.fallback {
+            Some(path) if Path::new(path).is_file() => path.clone(),
             _ => {
-                cache.insert(icon.clone(), IconStatus::NotFound);
+                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound).await;
                 return trigger_redraw();
             }
         };
 
-        let fb_icon = IconCacheKey {
-            app_id: fb_str.clone(),
-            size,
-            theme,
-            fallback,
+        let fb_key = IconKey {
+            app_id: fallback_str,
+            size: icon.size,
+            theme: icon.theme.clone(),
+            fallback: icon.fallback.clone(),
         };
 
-        // try to get fallback icon
-        let fallback_data = match cache.get(&fb_icon) {
-            Some(IconStatus::Ready {
-                pixels,
-                width,
-                height,
-                ..
-            }) => Some((pixels.clone(), *width, *height)),
-            _ => None,
-        };
+        // 3rd: checks if fallback is cached
+        {
+            let mut cache = cache_arc.write().unwrap();
+            match cache.get(&fb_key) {
+                Some(IconStatus::Ready {
+                    pixels,
+                    width,
+                    height,
+                    ..
+                }) => {
+                    let status = IconStatus::Ready {
+                        pixels: pixels.clone(),
+                        width: *width,
+                        height: *height,
+                        fallback: true,
+                    };
+                    cache.insert(icon, status);
+                    return trigger_redraw();
+                }
+                Some(IconStatus::Loading) => {
+                    cache.insert(icon, IconStatus::Loading);
+                    return;
+                }
+                Some(IconStatus::NotFound) => {
+                    cache.insert(icon, IconStatus::NotFound);
+                    return trigger_redraw();
+                }
+                None => {
+                    cache.insert(icon.clone(), IconStatus::Loading);
+                    cache.insert(fb_key.clone(), IconStatus::Loading);
+                }
+            }
+        }
 
-        // Return 3: points app icon cache to fallback icon
-        if let Some((pixels_clone, w, h, ..)) = fallback_data {
-            cache.insert(
-                icon.clone(),
-                IconStatus::Ready {
-                    pixels: pixels_clone,
-                    width: w,
-                    height: h,
+        // 4th: looks for fallback
+        match Self::fetch_icon_pixels(&fb_key).await {
+            Some((pixels, width, height)) => {
+                let status = IconStatus::Ready {
+                    pixels: pixels.into(),
+                    width,
+                    height,
                     fallback: true,
-                },
-            );
-            return trigger_redraw();
+                };
+                let mut cache = cache_arc.write().unwrap();
+                cache.insert(fb_key, status.clone());
+                cache.insert(icon, status);
+            }
+            None => {
+                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound).await;
+            }
         }
 
-        // if no fallback icon, set app cache to Loading
-        cache.insert(icon.clone(), IconStatus::Loading);
-
-        fallback_to_fetch = fb_icon;
+        trigger_redraw();
     }
 
-    let fb_pixel_data = image_sync(&fallback_to_fetch).await;
+    /// Async helper for disk searches e image processing
+    async fn fetch_icon_pixels(icon: &IconKey) -> Option<(Vec<u8>, i32, i32)> {
+        let (app_id, theme, size) = (icon.app_id.to_string(), icon.theme.clone(), icon.size);
 
-    // open icon cache
-    let mut cache = ICON_CACHE.write().unwrap();
+        tokio::task::spawn_blocking(move || {
+            // 1st: Direct file path
+            let path = Path::new(&app_id);
+            if path.is_file() {
+                if let Some(mut pixels) = process_image_file(path, size) {
+                    swizzle_rgba_to_bgra(&mut pixels);
+                    return Some((pixels, size as i32, size as i32));
+                }
+                return None;
+            }
 
-    // Return 4: got icon sucessfully
-    match fb_pixel_data {
-        Some((pixels, width, height)) => {
-            let icon_status = IconStatus::Ready {
-                pixels: pixels.into(),
-                width,
-                height,
-                fallback: true,
+            // 2nd: Linicon search setup
+            let (app_id_lower, app_id_short) = generate_search_variants(&app_id);
+            let ordered_sizes = generate_ordered_sizes(size);
+
+            let mut names_to_try = Vec::new();
+            for name in [app_id.clone(), app_id_lower, app_id_short] {
+                if !names_to_try.contains(&name) {
+                    names_to_try.push(name);
+                }
+            }
+
+            // Closure to loop icons names and sizes in order to finde the best match
+            // even if it isn't an exact match
+            let find_icon = |names: &[String],
+                             sizes: &[u16],
+                             target_theme: &str|
+             -> Option<(Vec<u8>, i32, i32)> {
+                for name in names {
+                    for &size_u16 in sizes {
+                        // Construção direta sem if/else
+                        let query = linicon::lookup_icon(name)
+                            .from_theme(target_theme)
+                            .with_size(size_u16);
+
+                        for icon_result in query.filter_map(Result::ok) {
+                            if !icon_result.path.exists() {
+                                continue;
+                            }
+
+                            if let Some(mut pixels) = process_image_file(&icon_result.path, size) {
+                                swizzle_rgba_to_bgra(&mut pixels);
+                                return Some((pixels, size as i32, size as i32));
+                            }
+                        }
+                    }
+                }
+                None
             };
-            cache.insert(fallback_to_fetch.clone(), icon_status.clone());
-            cache.insert(icon.clone(), icon_status);
-        }
-        None => {
-            cache.insert(icon.clone(), IconStatus::NotFound);
-        }
+
+            // loop the config theme and then the standard 'hicolor' or just 'hicolor'
+            if let Some(t) = &theme {
+                find_icon(&names_to_try, &ordered_sizes, t)
+                    .or_else(|| find_icon(&names_to_try, &ordered_sizes, "hicolor"))
+            } else {
+                find_icon(&names_to_try, &ordered_sizes, "hicolor")
+            }
+        })
+        .await
+        .unwrap_or(None)
     }
-    trigger_redraw();
+
+    /// Async helper to update cache status
+    async fn update_cache_status(
+        cache_arc: &Arc<RwLock<HashMap<IconKey, IconStatus>>>,
+        key: IconKey,
+        status: IconStatus,
+    ) {
+        let mut cache = cache_arc.write().unwrap();
+        cache.insert(key, status);
+    }
+}
+
+/// Backend start point
+pub fn init_and_sync(
+    sync_workspaces: bool,
+    sync_windows: bool,
+    redraw_tx: Option<mpsc::Sender<()>>,
+    config: Option<&DockConfig>,
+) -> Option<Arc<NiriManager>> {
+    let manager = if let (Some(tx), Some(cfg)) = (redraw_tx.clone(), config) {
+        Some(Arc::new(NiriManager::new(tx, cfg)))
+    } else {
+        None
+    };
+
+    let manager_for_frontend = manager.clone();
+
+    get_backend_runtime_handle().spawn(async move {
+        let mut connection = match Connection::make_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to connect to Niri IPC on initialization {e}");
+                return;
+            }
+        };
+
+        if sync_workspaces {
+            if let Ok(Ok(niri_ipc::Response::Workspaces(ws))) =
+                connection.push_request(niri_ipc::Request::Workspaces).await
+            {
+                crate::dock::niri::process_event(
+                    Event::WorkspacesChanged { workspaces: ws },
+                    &redraw_tx,
+                )
+                .await;
+            }
+        }
+
+        if sync_windows {
+            if let Ok(Ok(niri_ipc::Response::Windows(wins))) =
+                connection.push_request(niri_ipc::Request::Windows).await
+            {
+                if let Some(mgr) = &manager {
+                    for win in &wins {
+                        mgr.process_window_opened(win).await;
+                    }
+                }
+                crate::dock::niri::process_event(
+                    Event::WindowsChanged { windows: wins },
+                    &redraw_tx,
+                )
+                .await;
+            }
+        }
+
+        start_central_listener_loop(connection, manager, redraw_tx).await;
+    });
+    manager_for_frontend
+}
+
+async fn start_central_listener_loop(
+    connection: Connection,
+    manager: Option<Arc<NiriManager>>,
+    redraw_tx: Option<mpsc::Sender<()>>,
+) {
+    let mut listener = match connection.to_listener().await {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("Failed to start Niri EventStream {e}");
+            return;
+        }
+    };
+
+    let mut buf = String::new();
+
+    loop {
+        match listener.next_event(&mut buf).await {
+            Ok(Some(e)) => match &e {
+                // 1. Workspaces Events for workspaces and dock widgets
+                Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
+                    crate::workspace::niri::process_event(e).await;
+                }
+
+                // 2. Windows events, only for dock widget
+                Event::WindowOpenedOrChanged { window } => {
+                    if let Some(mgr) = &manager {
+                        mgr.process_window_opened(window).await;
+                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                    }
+                }
+                Event::WindowsChanged { windows } => {
+                    if let Some(mgr) = &manager {
+                        for win in windows {
+                            mgr.process_window_opened(win).await;
+                        }
+                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                    }
+                }
+                Event::WindowClosed { .. }
+                | Event::WindowLayoutsChanged { .. }
+                | Event::WindowUrgencyChanged { .. }
+                | Event::WindowFocusChanged { .. } => {
+                    if manager.is_some() {
+                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                    }
+                }
+            },
+            Ok(None) => {}
+            Err(err) => {
+                log::error!("Error reading Niri EventStream {err}");
+                break;
+            }
+        }
+        buf.clear();
+    }
 }
 
 // ==========================================
-// FUNÇÕES AUXILIARES DE PROCESSAMENTO (MANTENHA NO MESMO ARQUIVO)
+// RENDER AND ICON SEARCH UTILS
 // ==========================================
 
-fn rasterize_svg(path: &std::path::Path, size: u32) -> Option<Vec<u8>> {
+fn process_image_file(path: &Path, size: u32) -> Option<Vec<u8>> {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match extension {
+        "svg" => rasterize_svg(path, size),
+        "png" | "jpg" | "jpeg" => decode_and_resize_raster(path, size),
+        _ => None,
+    }
+}
+
+fn rasterize_svg(path: &Path, size: u32) -> Option<Vec<u8>> {
     let svg_data = std::fs::read(path).ok()?;
     let opt = Options::default();
     let tree = Tree::from_data(&svg_data, &opt).ok()?;
@@ -385,12 +399,11 @@ fn rasterize_svg(path: &std::path::Path, size: u32) -> Option<Vec<u8>> {
     Some(pixmap.take())
 }
 
-fn decode_and_resize_raster(path: &std::path::Path, size: u32) -> Option<Vec<u8>> {
+fn decode_and_resize_raster(path: &Path, size: u32) -> Option<Vec<u8>> {
     let img = image::open(path).ok()?;
     let resized = img.resize_exact(size, size, FilterType::Lanczos3);
     let mut rgba_img = resized.into_rgba8();
 
-    // Multiplicação manual do Alpha para matrizes estáticas PNG
     for pixel in rgba_img.pixels_mut() {
         let alpha = pixel[3] as f32 / 255.0;
         pixel[0] = (pixel[0] as f32 * alpha) as u8;
@@ -405,7 +418,50 @@ fn swizzle_rgba_to_bgra(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
         let r = chunk[0];
         let b = chunk[2];
-        chunk[0] = b; // Move Red para a posição do Blue
-        chunk[2] = r; // Move Blue para a posição do Red
+        chunk[0] = b;
+        chunk[2] = r;
     }
+}
+
+fn generate_search_variants(app_id: &str) -> (String, String) {
+    let app_id_lower = app_id.to_lowercase();
+    let app_id_short = app_id_lower
+        .split('.')
+        .last()
+        .unwrap_or(&app_id_lower)
+        .to_string();
+    (app_id_lower, app_id_short)
+}
+
+fn generate_ordered_sizes(target_size: u32) -> Vec<u16> {
+    const STANDARD_SIZES: [u16; 21] = [
+        8, 16, 20, 22, 24, 28, 32, 36, 42, 44, 48, 64, 72, 96, 128, 150, 192, 256, 384, 512, 1024,
+    ];
+    let partition_point = STANDARD_SIZES.partition_point(|&x| x < target_size as u16);
+    STANDARD_SIZES[partition_point..]
+        .iter()
+        .chain(STANDARD_SIZES[..partition_point].iter().rev())
+        .copied()
+        .collect()
+}
+fn build_linicon_queries<'a>(
+    name: &str,
+    size: u16,
+    theme: &Option<String>,
+) -> Vec<linicon::IconIter<'a>> {
+    let mut queries = Vec::new();
+
+    if let Some(t) = theme {
+        queries.push(linicon::lookup_icon(name).from_theme(t).with_size(size));
+    }
+
+    queries.push(linicon::lookup_icon(name).with_size(size));
+
+    queries.push(
+        linicon::lookup_icon(name)
+            .from_theme("hicolor")
+            .with_size(size),
+    );
+
+    queries
 }

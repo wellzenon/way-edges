@@ -1,15 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
-use backend::niri::{IconCacheKey, IconStatus, ICON_CACHE};
-use backend::tray::item::{Icon, IconHandle};
-use cairo::{Format, ImageSurface};
+use backend::niri::IconKey;
+use cairo::{ImageSurface, Rectangle};
 use config::def::shared::NumMargins;
 use config::def::widgets::wrapbox::dock::{DockConfig, ShowTitles};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
 use niri_ipc::{Window, Workspace};
-use util::color::COLOR_WHITE;
-use util::text::{draw_text, TextConfig};
-
-use crate::wayland::app;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MarginsF64 {
@@ -32,84 +28,45 @@ impl From<&NumMargins> for MarginsF64 {
 
 #[derive(Debug, Clone)]
 pub struct DockItem {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    pub icon_surface: Option<ImageSurface>,
+    pub rect: Rectangle,
+    pub icon_rect: Rectangle,
     pub id: f64,
     pub app_id: Option<String>,
     pub title: Option<String>,
     pub is_focused: bool,
+    pub has_resolved_icon: bool,
+    pub icon_key: IconKey,
+    pub fallback_char: String,
 }
 
 impl DockItem {
-    /// Verifica se a coordenada do mouse colide com a hitbox deste botão
     pub fn contains(&self, px: f64, py: f64) -> bool {
-        px >= self.x && px <= (self.x + self.width) && py >= self.y && py <= (self.y + self.height)
+        px >= self.rect.x()
+            && px <= (self.rect.x() + self.rect.width())
+            && py >= self.rect.y()
+            && py <= (self.rect.y() + self.rect.height())
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DockWorkspace {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub tag_surface: Option<ImageSurface>,
+    pub rect: Rectangle,
+    pub tag_rect: Rectangle,
+    pub tag_name: Option<String>,
     pub is_focused: bool,
-    pub output: Option<String>,
     pub items: Vec<DockItem>,
 
-    pub height: f64,
+    // TODO future global dock with all outputs and ordered by logical position
+    #[allow(dead_code)]
+    pub output: Option<String>,
 }
 
 impl DockWorkspace {
-    /// Verifica se a coordenada do mouse colide com a hitbox deste botão
     pub fn contains(&self, px: f64, py: f64) -> bool {
-        px >= self.x && px <= (self.x + self.width) && py >= self.y && py <= (self.y + self.height)
-    }
-}
-
-fn load_icon(
-    icon: &IconCacheKey,
-    cache: &mut HashMap<IconCacheKey, ImageSurface>,
-) -> Option<ImageSurface> {
-    // 1. Hit do Cache Frontend O(1)
-    if let Some(surface) = cache.get(icon) {
-        return Some(surface.clone());
-    }
-
-    // 2. Consulta ao Cache Global do Backend
-    let backend_cache = ICON_CACHE.read().unwrap();
-    let status = backend_cache.get(&icon)?;
-
-    match status {
-        IconStatus::Ready {
-            pixels,
-            width,
-            height,
-            ..
-        } => {
-            let mut surface = ImageSurface::create(Format::ARgb32, *width, *height).ok()?;
-
-            {
-                let stride = surface.stride() as usize;
-                let mut data = surface.data().ok()?;
-                let w_bytes = (*width * 4) as usize;
-
-                for (dest_row, src_row) in data
-                    .chunks_exact_mut(stride)
-                    .zip(pixels.chunks_exact(w_bytes))
-                {
-                    dest_row[..w_bytes].copy_from_slice(src_row);
-                }
-            }
-            surface.mark_dirty();
-
-            cache.insert(icon.clone(), surface.clone());
-            Some(surface)
-        }
-        IconStatus::Loading | IconStatus::NotFound => None,
+        px >= self.rect.x()
+            && px <= (self.rect.x() + self.rect.width())
+            && py >= self.rect.y()
+            && py <= (self.rect.y() + self.rect.height())
     }
 }
 
@@ -121,13 +78,12 @@ pub struct DockLayout {
 }
 
 impl DockLayout {
-    /// O motor de roteamento espacial.
-    /// Retorna a grade completa e as dimensões finais que o Cairo precisará alocar.
     pub fn calculate(
         windows: &[Window],
         workspaces: &BTreeMap<u64, Workspace>,
         config: &DockConfig,
-        cache: &mut HashMap<IconCacheKey, ImageSurface>,
+        icon_surface_cache: &HashMap<IconKey, ImageSurface>,
+        font_system: &mut FontSystem,
     ) -> Self {
         let mut current_x = 0.0;
         let ws_y = 0.0;
@@ -141,61 +97,65 @@ impl DockLayout {
         let item_border_width = config.window_button.border_width as f64;
         let item_gap = config.window_button.gap as f64;
         let icon_size = config.window_button.icon_size as f64;
+
         let icon_theme = &config.window_button.icon_theme;
         let icon_fallback = &config.window_button.icon_fallback;
         let show_titles = config.window_button.show_titles;
-        let has_icon = show_titles != ShowTitles::Only && icon_size > 0.0;
+        let is_icon_enabled = show_titles != ShowTitles::Only && icon_size > 0.0;
+
         let title_width = config.window_button.title_width as f64;
         let item_margins: MarginsF64 = (&config.window_button.margins).into();
 
         let item_height =
             item_border_width * 2.0 + item_margins.top + item_margins.bottom + icon_size;
 
-        let height = border_width * 2.0 + margins.top + margins.bottom + item_height;
-
-        // SETUP DE MEDIÇÃO: Inicialização alocada apenas uma vez fora do loop
+        let ws_height = border_width * 2.0 + margins.top + margins.bottom + item_height;
         let font_size = config.font_size as f32;
 
         let ws_vec: Vec<DockWorkspace> = windows
             .chunk_by(|a, b| a.workspace_id == b.workspace_id)
             .map(|ws| {
                 let ws_id = ws[0].workspace_id.unwrap_or(0) as i32;
-
                 let ws_x = current_x;
+
                 current_x += border_width + margins.left;
 
-                let (name, is_focused, output) = workspaces
+                let (name, output) = workspaces
                     .get(&(ws_id as u64))
-                    .map(|ws| {
+                    .map(|w| {
                         (
-                            ws.name.clone().unwrap_or_else(|| ws.idx.to_string()),
-                            ws.is_focused,
-                            ws.output.clone(),
+                            w.name.clone().or_else(|| Some(w.idx.to_string())),
+                            w.output.clone(),
                         )
                     })
                     .unwrap_or_default();
 
-                let tag_surface = if !name.is_empty() && workspace_titles {
-                    let canvas = draw_text(
-                        &name,
-                        TextConfig::new(
-                            config.font_family.as_family(),
-                            None,
-                            COLOR_WHITE,
-                            font_size as i32,
-                        ),
+                let tag_rect = if name.is_some() && workspace_titles {
+                    let (width, _height) = measure_text(
+                        font_system,
+                        name.as_deref().unwrap(),
+                        font_size,
+                        config.font_family.as_family(),
                     );
 
-                    current_x += canvas.width as f64 + margins.left as f64;
+                    let tag_rect = Rectangle::new(current_x, ws_y, width, ws_height);
+                    current_x += width + margins.left as f64;
 
-                    Some(canvas.to_image_surface())
+                    tag_rect
                 } else {
-                    None
+                    Rectangle::new(0.0, 0.0, 0.0, 0.0)
                 };
+
+                // get ws focused from window focused
+                let mut ws_focused = false;
 
                 let items: Vec<DockItem> = ws
                     .iter()
                     .map(|win| {
+                        // if the window focused is in this workspace the the workspace will be
+                        // focused too
+                        ws_focused = ws_focused || win.is_focused;
+
                         let has_title = match show_titles {
                             ShowTitles::Always | ShowTitles::Only => true,
                             ShowTitles::Focused if win.is_focused => true,
@@ -207,84 +167,82 @@ impl DockLayout {
 
                         let app_id = win.app_id.clone().unwrap_or_default();
 
-                        let icon = IconCacheKey {
+                        let icon_key = IconKey {
                             app_id: app_id.clone(),
                             theme: icon_theme.clone(),
                             size: icon_size as u32,
                             fallback: icon_fallback.clone(),
                         };
 
-                        let surface = if has_icon {
-                            match load_icon(&icon, cache) {
-                                Some(icon_surface) => {
-                                    item_width += icon_surface.width() as f64;
+                        let (icon_rect, has_resolved_icon, fallback_char) = if is_icon_enabled {
+                            let (icon_width, icon_height, has_resolved_icon) =
+                                if let Some(surface) = icon_surface_cache.get(&icon_key) {
+                                    (surface.width() as f64, surface.height() as f64, true)
+                                } else {
+                                    (icon_size, icon_size, false)
+                                };
 
-                                    Some(icon_surface)
-                                }
-                                None => {
-                                    let fallback = config.window_button.icon_fallback.as_deref();
+                            let icon_rec = Rectangle::new(
+                                current_x + item_margins.left + item_border_width,
+                                item_y + item_margins.top + item_border_width,
+                                icon_width,
+                                icon_height,
+                            );
 
-                                    let identifier = if let Some(char_str) =
-                                        fallback.filter(|f| f.chars().count() <= 4)
-                                    {
-                                        char_str.to_string()
-                                    } else {
-                                        let win_title = win
-                                            .app_id
-                                            .as_deref()
-                                            .unwrap_or(win.title.as_deref().unwrap_or("?"));
-
-                                        win_title
-                                            .split('.')
-                                            .last()
-                                            .unwrap_or("?")
-                                            .chars()
-                                            .next()
-                                            .unwrap_or('?')
-                                            .to_uppercase()
-                                            .to_string()
-                                    };
-
-                                    let canvas = draw_text(
-                                        &identifier,
-                                        TextConfig::new(
-                                            config.window_button.font_family.as_family(),
-                                            None,
-                                            COLOR_WHITE,
-                                            icon_size as i32,
-                                        ),
-                                    );
-
-                                    item_width += canvas.width as f64;
-
-                                    Some(canvas.to_image_surface())
-                                }
-                            }
+                            (icon_rec, has_resolved_icon, String::new())
                         } else {
-                            None
+                            let fallback_char = if let Some(fb) =
+                                icon_fallback.as_deref().filter(|s| s.chars().count() == 1)
+                            {
+                                fb.to_string()
+                            } else if let Some(title) =
+                                win.title.as_deref().filter(|s| !s.is_empty())
+                            {
+                                title.chars().next().unwrap().to_uppercase().to_string()
+                            } else {
+                                String::new()
+                            };
+
+                            let (width, height) = measure_text(
+                                font_system,
+                                &fallback_char,
+                                font_size,
+                                config.font_family.as_family(),
+                            );
+
+                            let icon_rec = Rectangle::new(
+                                current_x + item_margins.left + item_border_width,
+                                item_y + item_margins.top + item_border_width,
+                                width,
+                                height,
+                            );
+
+                            (icon_rec, false, fallback_char)
                         };
+
+                        item_width += icon_rect.width();
 
                         if has_title {
                             item_width += title_width;
                         }
 
-                        if has_icon && has_title {
+                        if has_title && is_icon_enabled && icon_rect.width() > 0.0 {
                             item_width += item_margins.left;
                         }
 
-                        let item_x = current_x;
+                        let item_rect = Rectangle::new(current_x, item_y, item_width, item_height);
                         current_x += item_width + item_gap;
 
                         DockItem {
-                            x: item_x,
-                            y: item_y,
-                            width: item_width,
-                            height: item_height,
-                            icon_surface: surface,
+                            rect: item_rect,
+                            icon_rect,
                             id: win.id as f64,
                             app_id: win.app_id.clone(),
                             title: win.title.clone(),
                             is_focused: win.is_focused,
+                            has_resolved_icon,
+                            icon_key,
+                            fallback_char,
                         }
                     })
                     .collect();
@@ -294,15 +252,15 @@ impl DockLayout {
 
                 let ws_width = current_x - ws_x;
 
+                let ws_rect = Rectangle::new(ws_x, ws_y, ws_width, ws_height);
+
                 current_x += gap;
 
                 DockWorkspace {
-                    x: ws_x,
-                    y: ws_y,
-                    width: ws_width,
-                    height,
-                    tag_surface,
-                    is_focused,
+                    rect: ws_rect,
+                    tag_rect,
+                    tag_name: name,
+                    is_focused: ws_focused,
                     output,
                     items,
                 }
@@ -314,14 +272,38 @@ impl DockLayout {
         DockLayout {
             workspaces: ws_vec,
             total_width: current_x,
-            total_height: height,
+            total_height: ws_height,
         }
     }
-    /// Usado no on_mouse_event para saber qual janela foi clicada
+
     pub fn find_clicked_item(&self, x: f64, y: f64) -> Option<&DockItem> {
         self.workspaces
             .iter()
             .find(|ws| ws.contains(x, y))
             .and_then(|ws| ws.items.iter().find(|item| item.contains(x, y)))
     }
+}
+
+pub fn measure_text(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    font_family: Family,
+) -> (f64, f64) {
+    let metrics = Metrics::new(font_size, font_size);
+    let mut buffer = Buffer::new(font_system, metrics);
+
+    let attrs = Attrs::new().family(font_family);
+    buffer.set_text(font_system, text, &attrs, Shaping::Advanced);
+    buffer.shape_until_scroll(font_system, false);
+
+    let width = buffer
+        .layout_runs()
+        .map(|run| run.line_w)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+
+    let height = buffer.layout_runs().count() as f32 * font_size;
+
+    (width as f64, height as f64)
 }

@@ -206,7 +206,7 @@ fn start_listener() {
     );
     CTX_INITED.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    crate::niri::init_and_sync(true, false);
+    crate::niri::init_and_sync(true, false, None, None);
 }
 
 pub fn register_niri_event_callback(cb: WorkspaceCB<NiriConf>) -> WorkspaceHandler {

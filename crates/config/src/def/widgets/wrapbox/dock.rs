@@ -58,7 +58,7 @@ pub struct WindowButton {
 
     #[knus(child, default = dt_wb_font_size(), unwrap(argument))]
     #[serde(default = "dt_wb_font_size")]
-    pub font_size: f64,
+    pub font_size: i32,
 
     #[knus(child, default = dt_wb_line_height(), unwrap(argument))]
     #[serde(default = "dt_wb_line_height")]
@@ -275,14 +275,14 @@ macro_rules! def_fallback {
 
 def_fallback!(dt_font_size, i32, 26);
 def_fallback!(dt_workspace_titles, bool, true);
-def_fallback!(dt_active_fg_color, Color, Color::rgba(255, 255, 255, 80));
-def_fallback!(dt_fg_color, Color, Color::rgba(255, 255, 255, 40));
-def_fallback!(dt_active_bg_color, Color, Color::rgba(0, 0, 0, 255));
-def_fallback!(dt_bg_color, Color, Color::rgba(0, 0, 0, 40));
-def_fallback!(dt_border_color, Color, Color::rgba(80, 80, 80, 255));
-def_fallback!(dt_border_width, i32, 0);
+def_fallback!(dt_fg_color, Color, Color::rgba(255, 255, 255, 80));
+def_fallback!(dt_active_fg_color, Color, Color::rgba(255, 255, 255, 160));
+def_fallback!(dt_bg_color, Color, Color::rgba(0, 0, 0, 255));
+def_fallback!(dt_active_bg_color, Color, Color::rgba(255, 255, 255, 17));
+def_fallback!(dt_border_color, Color, Color::rgba(0, 0, 0, 255));
+def_fallback!(dt_border_width, i32, 5);
 def_fallback!(dt_border_radius, i32, 10);
-def_fallback!(dt_gap, i32, 15);
+def_fallback!(dt_gap, i32, 0);
 def_fallback!(
     dt_margin,
     NumMargins,
@@ -296,7 +296,7 @@ def_fallback!(
 
 // window_button WindowButton
 def_fallback!(dt_window_button, WindowButton, WindowButton::default());
-def_fallback!(dt_wb_font_size, f64, 16.0);
+def_fallback!(dt_wb_font_size, i32, 16);
 def_fallback!(dt_wb_line_height, f64, 1.4);
 def_fallback!(dt_wb_title_width, f64, 60.0);
 def_fallback!(dt_wb_show_titles, ShowTitles, ShowTitles::Focused);
@@ -304,15 +304,15 @@ def_fallback!(dt_wb_wrap_titles, bool, false);
 def_fallback!(dt_wb_icon_size, f64, 32.0);
 def_fallback!(dt_wb_icon_opacity, f64, 0.5);
 def_fallback!(dt_wb_active_icon_opacity, f64, 1.0);
-def_fallback!(dt_wb_fg_color, Color, Color::rgba(180, 180, 180, 255));
+def_fallback!(dt_wb_fg_color, Color, Color::rgba(180, 180, 180, 160));
 def_fallback!(
     dt_wb_active_fg_color,
     Color,
     Color::rgba(230, 230, 230, 255)
 );
-def_fallback!(dt_wb_bg_color, Color, Color::rgba(40, 40, 40, 80));
-def_fallback!(dt_wb_active_bg_color, Color, Color::rgba(60, 60, 60, 120));
-def_fallback!(dt_wb_border_color, Color, Color::rgba(80, 80, 80, 255));
+def_fallback!(dt_wb_bg_color, Color, Color::rgba(0, 0, 0, 0));
+def_fallback!(dt_wb_active_bg_color, Color, Color::rgba(255, 255, 255, 17));
+def_fallback!(dt_wb_border_color, Color, Color::rgba(0, 0, 0, 0));
 def_fallback!(dt_wb_border_width, f64, 0.0);
 def_fallback!(dt_wb_border_radius, f64, 10.0);
 def_fallback!(dt_wb_gap, f64, 5.0);
@@ -411,7 +411,7 @@ wrap-box {
                 assert_eq!(dock_config.margins, dt_margin());
 
                 //window_button
-                assert_eq!(dock_config.window_button.font_size, 12.0);
+                assert_eq!(dock_config.window_button.font_size, 12);
                 assert_eq!(dock_config.window_button.title_width, 48.0);
                 assert!(matches!(
                     dock_config.window_button.show_titles,
