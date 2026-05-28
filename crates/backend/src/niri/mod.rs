@@ -335,7 +335,10 @@ async fn start_central_listener_loop(
             Ok(Some(e)) => match &e {
                 // 1. Workspaces Events for workspaces and dock widgets
                 Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
-                    crate::workspace::niri::process_event(e).await;
+                    crate::workspace::niri::process_event(e.clone()).await;
+                    if manager.is_some() {
+                        crate::dock::niri::process_event(e.clone(), &redraw_tx).await;
+                    }
                 }
 
                 // 2. Windows events, only for dock widget
@@ -443,25 +446,4 @@ fn generate_ordered_sizes(target_size: u32) -> Vec<u16> {
         .chain(STANDARD_SIZES[..partition_point].iter().rev())
         .copied()
         .collect()
-}
-fn build_linicon_queries<'a>(
-    name: &str,
-    size: u16,
-    theme: &Option<String>,
-) -> Vec<linicon::IconIter<'a>> {
-    let mut queries = Vec::new();
-
-    if let Some(t) = theme {
-        queries.push(linicon::lookup_icon(name).from_theme(t).with_size(size));
-    }
-
-    queries.push(linicon::lookup_icon(name).with_size(size));
-
-    queries.push(
-        linicon::lookup_icon(name)
-            .from_theme("hicolor")
-            .with_size(size),
-    );
-
-    queries
 }

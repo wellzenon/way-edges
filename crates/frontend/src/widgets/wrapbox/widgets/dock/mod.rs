@@ -200,6 +200,12 @@ pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
 
     let waker = ctx.make_redraw_ping();
 
+    let output = if let Some(output_data) = &ctx.builder.output.data::<OutputData>() {
+        output_data.with_output_info(|info| info.name.clone().unwrap_or_default())
+    } else {
+        String::new()
+    };
+
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -212,12 +218,6 @@ pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
             }
         });
     });
-
-    let output = if let Some(output_data) = &ctx.builder.output.data::<OutputData>() {
-        output_data.with_output_info(|info| info.name.clone().unwrap_or_default())
-    } else {
-        String::new()
-    };
 
     DockCtx {
         output,
