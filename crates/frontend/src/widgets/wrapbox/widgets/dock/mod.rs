@@ -91,28 +91,28 @@ impl BoxedWidget for DockCtx {
     fn content(&mut self) -> ImageSurface {
         // 1. Extract worlspaces and windows state, initially
         // TODO outputs state
-        let (workspaces, mut windows) =
-            if let Ok(state) = backend::dock::niri::DOCK_STATE.try_read() {
-                // filter workspaces by output
-                let ws: std::collections::BTreeMap<_, _> = state
-                    .workspaces
-                    .iter()
-                    .filter(|(_, w)| &w.output.as_deref().unwrap_or_default() == &self.output)
-                    .map(|(&k, w)| (k, w.clone()))
-                    .collect();
+        let (workspaces, mut windows) = if let Some(manager) = &self.niri_manager {
+            let state = manager.state.write().unwrap();
+            // filter workspaces by output
+            let ws: std::collections::BTreeMap<_, _> = state
+                .workspaces
+                .iter()
+                .filter(|(_, w)| &w.output.as_deref().unwrap_or_default() == &self.output)
+                .map(|(&k, w)| (k, w.clone()))
+                .collect();
 
-                // filter windows by workspace
-                let wins: Vec<_> = state
-                    .windows
-                    .values()
-                    .filter(|w| w.workspace_id.map_or(false, |id| ws.contains_key(&id)))
-                    .cloned()
-                    .collect();
+            // filter windows by workspace
+            let wins: Vec<_> = state
+                .windows
+                .values()
+                .filter(|w| w.workspace_id.map_or(false, |id| ws.contains_key(&id)))
+                .cloned()
+                .collect();
 
-                (ws, wins)
-            } else {
-                (std::collections::BTreeMap::new(), Vec::new())
-            };
+            (ws, wins)
+        } else {
+            (std::collections::BTreeMap::new(), Vec::new())
+        };
 
         // 2. order by workspace idx (position from top to bottom) then floats and last by window x,y position
         windows.sort_by_key(|w| {

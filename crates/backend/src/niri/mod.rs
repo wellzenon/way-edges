@@ -4,10 +4,10 @@ use ::std::path::Path;
 use config::def::widgets::wrapbox::dock::DockConfig;
 use connection::{Connection, Event};
 use image::imageops::FilterType;
-use niri_ipc::Window;
+use niri_ipc::{Output, Window, Workspace};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
@@ -33,6 +33,15 @@ pub enum IconStatus {
     NotFound,
 }
 
+#[derive(Default, Debug)]
+pub struct NiriDockState {
+    pub windows: BTreeMap<u64, Window>,
+    pub workspaces: BTreeMap<u64, Workspace>,
+
+    // TODO golbal dock with all outputs odered by logical position
+    pub outputs: BTreeMap<u64, Output>,
+}
+
 /// Niri Manager:
 /// - signals the dock is enabled
 /// - carries the redraw sender signal
@@ -40,6 +49,7 @@ pub enum IconStatus {
 /// Bit much?! heh
 #[derive(Debug)]
 pub struct NiriManager {
+    pub state: Arc<RwLock<NiriDockState>>,
     pub icon_cache: Arc<RwLock<HashMap<IconKey, IconStatus>>>,
     redraw_tx: mpsc::Sender<()>,
     icon_size: u32,
@@ -50,12 +60,94 @@ pub struct NiriManager {
 impl NiriManager {
     pub fn new(redraw_tx: mpsc::Sender<()>, config: &DockConfig) -> Self {
         Self {
+            state: Arc::new(RwLock::new(NiriDockState::default())),
             icon_cache: Arc::new(RwLock::new(HashMap::new())),
             redraw_tx,
             icon_size: config.window_button.icon_size as u32,
             icon_theme: config.window_button.icon_theme.clone(),
             icon_fallback: config.window_button.icon_fallback.clone(),
         }
+    }
+
+    fn trigger_redraw(&self) {
+        let _ = self.redraw_tx.try_send(());
+    }
+
+    pub async fn process_event(&self, e: &Event) {
+        let mut state_lock = self.state.write().unwrap();
+
+        match e {
+            Event::WorkspaceActivated { id, focused } => {
+                if let Some(output) = state_lock.workspaces.get(&id).map(|w| w.output.clone()) {
+                    for (ws_id, ws) in state_lock.workspaces.iter_mut() {
+                        if ws.output == output {
+                            let should_be_active = ws_id == id;
+                            let should_be_focused = should_be_active && *focused;
+
+                            if ws.is_active != should_be_active
+                                || ws.is_focused != should_be_focused
+                            {
+                                ws.is_active = should_be_active;
+                                ws.is_focused = should_be_focused;
+                            }
+                        }
+                    }
+                }
+            }
+            Event::WorkspacesChanged { workspaces } => {
+                state_lock.workspaces.clear();
+                state_lock
+                    .workspaces
+                    .extend(workspaces.into_iter().map(|w| (w.id, w.clone())));
+            }
+            Event::WindowsChanged { windows } => {
+                state_lock.windows.clear();
+                state_lock
+                    .windows
+                    .extend(windows.into_iter().map(|w| (w.id, w.clone())));
+            }
+            Event::WindowLayoutsChanged { changes, .. } => {
+                for (id, new_layout) in changes {
+                    if let Some(win) = state_lock.windows.get_mut(&id) {
+                        if win.layout != *new_layout {
+                            win.layout = new_layout.clone();
+                        }
+                    }
+                }
+            }
+            Event::WindowOpenedOrChanged { window } => {
+                if window.is_focused {
+                    state_lock
+                        .windows
+                        .values_mut()
+                        .for_each(|w| w.is_focused = false);
+                }
+                state_lock.windows.insert(window.id, window.clone());
+            }
+            Event::WindowClosed { id } => if state_lock.windows.remove(&id).is_some() {},
+            Event::WindowFocusChanged { id } => {
+                if let Some(focused_id) = id {
+                    for (win_id, win) in state_lock.windows.iter_mut() {
+                        let should_be_focused = win_id == focused_id;
+                        if win.is_focused != should_be_focused {
+                            win.is_focused = should_be_focused;
+                        }
+                    }
+                }
+            }
+            Event::WindowUrgencyChanged { id, is_urgent } => {
+                if let Some(win) = state_lock.windows.get_mut(&id) {
+                    if win.is_urgent != *is_urgent {
+                        win.is_urgent = *is_urgent;
+                    }
+                }
+            }
+        }
+        drop(state_lock);
+
+        //redrawing all events! If in the futura some event won't need redraw, then the redraw must
+        //go from here to inside each match case where it's needed
+        self.trigger_redraw();
     }
 
     /// Gets newly opened window icon
@@ -285,11 +377,10 @@ pub fn init_and_sync(
             if let Ok(Ok(niri_ipc::Response::Workspaces(ws))) =
                 connection.push_request(niri_ipc::Request::Workspaces).await
             {
-                crate::dock::niri::process_event(
-                    Event::WorkspacesChanged { workspaces: ws },
-                    &redraw_tx,
-                )
-                .await;
+                if let Some(mgr) = &manager {
+                    let event = Event::WorkspacesChanged { workspaces: ws };
+                    mgr.process_event(&event).await;
+                }
             }
         }
 
@@ -301,25 +392,18 @@ pub fn init_and_sync(
                     for win in &wins {
                         mgr.process_window_opened(win).await;
                     }
+                    let event = Event::WindowsChanged { windows: wins };
+                    mgr.process_event(&event).await;
                 }
-                crate::dock::niri::process_event(
-                    Event::WindowsChanged { windows: wins },
-                    &redraw_tx,
-                )
-                .await;
             }
         }
 
-        start_central_listener_loop(connection, manager, redraw_tx).await;
+        start_central_listener_loop(connection, manager).await;
     });
     manager_for_frontend
 }
 
-async fn start_central_listener_loop(
-    connection: Connection,
-    manager: Option<Arc<NiriManager>>,
-    redraw_tx: Option<mpsc::Sender<()>>,
-) {
+async fn start_central_listener_loop(connection: Connection, manager: Option<Arc<NiriManager>>) {
     let mut listener = match connection.to_listener().await {
         Ok(l) => l,
         Err(e) => {
@@ -336,8 +420,8 @@ async fn start_central_listener_loop(
                 // 1. Workspaces Events for workspaces and dock widgets
                 Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
                     crate::workspace::niri::process_event(e.clone()).await;
-                    if manager.is_some() {
-                        crate::dock::niri::process_event(e.clone(), &redraw_tx).await;
+                    if let Some(mgr) = &manager {
+                        mgr.process_event(&e).await;
                     }
                 }
 
@@ -345,7 +429,7 @@ async fn start_central_listener_loop(
                 Event::WindowOpenedOrChanged { window } => {
                     if let Some(mgr) = &manager {
                         mgr.process_window_opened(window).await;
-                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                        mgr.process_event(&e).await;
                     }
                 }
                 Event::WindowsChanged { windows } => {
@@ -353,15 +437,15 @@ async fn start_central_listener_loop(
                         for win in windows {
                             mgr.process_window_opened(win).await;
                         }
-                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                        mgr.process_event(&e).await;
                     }
                 }
                 Event::WindowClosed { .. }
                 | Event::WindowLayoutsChanged { .. }
                 | Event::WindowUrgencyChanged { .. }
                 | Event::WindowFocusChanged { .. } => {
-                    if manager.is_some() {
-                        crate::dock::niri::process_event(e, &redraw_tx).await;
+                    if let Some(mgr) = &manager {
+                        mgr.process_event(&e).await;
                     }
                 }
             },
