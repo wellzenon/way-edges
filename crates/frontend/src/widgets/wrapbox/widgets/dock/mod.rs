@@ -9,8 +9,8 @@ use cairo::{Format, ImageSurface};
 use config::def::widgets::wrapbox::dock::DockConfig;
 use cosmic_text::{FontSystem, SwashCache};
 use smithay_client_toolkit::output::OutputData;
+use std::sync::mpsc;
 use std::{collections::HashMap, process::Command, sync::Arc};
-use tokio::sync::mpsc;
 use wayland_client::Proxy;
 
 use layout::DockLayout;
@@ -194,7 +194,7 @@ impl BoxedWidget for DockCtx {
 
 pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
     // redraw signal
-    let (redraw_tx, mut redraw_rx) = mpsc::channel::<()>(1);
+    let (redraw_tx, redraw_rx) = mpsc::channel::<()>();
 
     let manager = backend::dock::niri::register_dock_listener(redraw_tx, &config);
 
@@ -207,16 +207,9 @@ pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
     };
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime");
-
-        rt.block_on(async move {
-            while redraw_rx.recv().await.is_some() {
-                waker.ping();
-            }
-        });
+        while redraw_rx.recv().is_ok() {
+            waker.ping();
+        }
     });
 
     DockCtx {

@@ -1,7 +1,7 @@
 use crate::niri::NiriManager;
 use config::def::widgets::wrapbox::dock::DockConfig;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 
 pub fn register_dock_listener(
     redraw_tx: Sender<()>,

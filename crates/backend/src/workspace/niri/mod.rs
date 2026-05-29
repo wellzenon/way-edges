@@ -108,6 +108,10 @@ fn sort_workspaces(v: Vec<niri_ipc::Workspace>) -> HashMap<String, Vec<niri_ipc:
 }
 
 pub async fn process_event(e: Event) {
+    if !is_ctx_inited() {
+        return;
+    }
+
     log::debug!("niri event: {e:?}");
 
     let ctx = get_niri_ctx();

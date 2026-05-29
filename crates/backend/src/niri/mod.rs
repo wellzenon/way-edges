@@ -1,6 +1,6 @@
 pub mod connection;
 
-use ::std::path::Path;
+use ::std::path::{Path, PathBuf};
 use config::def::widgets::wrapbox::dock::DockConfig;
 use connection::{Connection, Event};
 use image::imageops::FilterType;
@@ -8,8 +8,7 @@ use niri_ipc::{Output, Window, Workspace};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
+use std::sync::{mpsc, Arc, RwLock};
 
 use crate::runtime::get_backend_runtime_handle;
 
@@ -70,10 +69,10 @@ impl NiriManager {
     }
 
     fn trigger_redraw(&self) {
-        let _ = self.redraw_tx.try_send(());
+        let _ = self.redraw_tx.send(());
     }
 
-    pub async fn process_event(&self, e: &Event) {
+    pub fn process_event(&self, e: &Event) {
         let mut state_lock = self.state.write().unwrap();
 
         match e {
@@ -151,7 +150,7 @@ impl NiriManager {
     }
 
     /// Gets newly opened window icon
-    pub async fn process_window_opened(&self, window: &Window) {
+    pub fn process_window_opened(&self, window: &Window) {
         let app_id = window.app_id.clone().unwrap_or_default();
 
         let icon_key = IconKey {
@@ -182,7 +181,7 @@ impl NiriManager {
         redraw_tx: mpsc::Sender<()>,
     ) {
         let trigger_redraw = || {
-            let _ = redraw_tx.try_send(());
+            let _ = redraw_tx.send(());
         };
 
         // 1st: look for the main icon
@@ -196,8 +195,8 @@ impl NiriManager {
                     height,
                     fallback: false,
                 },
-            )
-            .await;
+            );
+
             return trigger_redraw();
         }
 
@@ -205,7 +204,7 @@ impl NiriManager {
         let fallback_str = match &icon.fallback {
             Some(path) if Path::new(path).is_file() => path.clone(),
             _ => {
-                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound).await;
+                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound);
                 return trigger_redraw();
             }
         };
@@ -265,11 +264,38 @@ impl NiriManager {
                 cache.insert(icon, status);
             }
             None => {
-                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound).await;
+                Self::update_cache_status(&cache_arc, icon, IconStatus::NotFound);
             }
         }
 
         trigger_redraw();
+    }
+
+    fn get_icon_from_desktop_file(app_id: &str) -> Option<String> {
+        let mut search_paths = vec![
+            PathBuf::from(format!("/usr/share/applications/{}.desktop", app_id)),
+            PathBuf::from(format!("/usr/local/share/applications/{}.desktop", app_id)),
+        ];
+
+        if let Ok(home) = std::env::var("HOME") {
+            search_paths.push(PathBuf::from(format!(
+                "{}/.local/share/applications/{}.desktop",
+                home, app_id
+            )));
+        }
+
+        for path in search_paths {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("Icon=") {
+                        return Some(trimmed.trim_start_matches("Icon=").to_string());
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Async helper for disk searches e image processing
@@ -287,59 +313,51 @@ impl NiriManager {
                 return None;
             }
 
-            // 2nd: Linicon search setup
+            // 2nd: Icon search setup
             let (app_id_lower, app_id_short) = generate_search_variants(&app_id);
             let ordered_sizes = generate_ordered_sizes(size);
 
             let mut names_to_try = Vec::new();
+
+            if let Some(desktop_icon_name) = Self::get_icon_from_desktop_file(&app_id) {
+                names_to_try.push(desktop_icon_name);
+            }
+
             for name in [app_id.clone(), app_id_lower, app_id_short] {
                 if !names_to_try.contains(&name) {
                     names_to_try.push(name);
                 }
             }
 
-            // Closure to loop icons names and sizes in order to finde the best match
-            // even if it isn't an exact match
-            let find_icon = |names: &[String],
-                             sizes: &[u16],
-                             target_theme: &str|
-             -> Option<(Vec<u8>, i32, i32)> {
-                for name in names {
-                    for &size_u16 in sizes {
-                        // Construção direta sem if/else
-                        let query = linicon::lookup_icon(name)
-                            .from_theme(target_theme)
-                            .with_size(size_u16);
+            // 3rd: A busca propriamente dita (substituindo a closure e o unwrap perigoso)
+            for name in &names_to_try {
+                for &size_u16 in &ordered_sizes {
+                    let mut builder = freedesktop_icons::lookup(name).with_size(size_u16);
 
-                        for icon_result in query.filter_map(Result::ok) {
-                            if !icon_result.path.exists() {
-                                continue;
-                            }
+                    // Adiciona o tema APENAS se o usuário configurou um válido
+                    if let Some(t) = &theme {
+                        if !t.is_empty() {
+                            builder = builder.with_theme(t);
+                        }
+                    }
 
-                            if let Some(mut pixels) = process_image_file(&icon_result.path, size) {
-                                swizzle_rgba_to_bgra(&mut pixels);
-                                return Some((pixels, size as i32, size as i32));
-                            }
+                    if let Some(path) = builder.find() {
+                        if let Some(mut pixels) = process_image_file(&path, size) {
+                            swizzle_rgba_to_bgra(&mut pixels);
+                            return Some((pixels, size as i32, size as i32));
                         }
                     }
                 }
-                None
-            };
-
-            // loop the config theme and then the standard 'hicolor' or just 'hicolor'
-            if let Some(t) = &theme {
-                find_icon(&names_to_try, &ordered_sizes, t)
-                    .or_else(|| find_icon(&names_to_try, &ordered_sizes, "hicolor"))
-            } else {
-                find_icon(&names_to_try, &ordered_sizes, "hicolor")
             }
+
+            None
         })
         .await
         .unwrap_or(None)
     }
 
     /// Async helper to update cache status
-    async fn update_cache_status(
+    fn update_cache_status(
         cache_arc: &Arc<RwLock<HashMap<IconKey, IconStatus>>>,
         key: IconKey,
         status: IconStatus,
@@ -379,7 +397,7 @@ pub fn init_and_sync(
             {
                 if let Some(mgr) = &manager {
                     let event = Event::WorkspacesChanged { workspaces: ws };
-                    mgr.process_event(&event).await;
+                    mgr.process_event(&event);
                 }
             }
         }
@@ -390,10 +408,10 @@ pub fn init_and_sync(
             {
                 if let Some(mgr) = &manager {
                     for win in &wins {
-                        mgr.process_window_opened(win).await;
+                        mgr.process_window_opened(win);
                     }
                     let event = Event::WindowsChanged { windows: wins };
-                    mgr.process_event(&event).await;
+                    mgr.process_event(&event);
                 }
             }
         }
@@ -421,23 +439,23 @@ async fn start_central_listener_loop(connection: Connection, manager: Option<Arc
                 Event::WorkspaceActivated { .. } | Event::WorkspacesChanged { .. } => {
                     crate::workspace::niri::process_event(e.clone()).await;
                     if let Some(mgr) = &manager {
-                        mgr.process_event(&e).await;
+                        mgr.process_event(&e);
                     }
                 }
 
                 // 2. Windows events, only for dock widget
                 Event::WindowOpenedOrChanged { window } => {
                     if let Some(mgr) = &manager {
-                        mgr.process_window_opened(window).await;
-                        mgr.process_event(&e).await;
+                        mgr.process_window_opened(window);
+                        mgr.process_event(&e);
                     }
                 }
                 Event::WindowsChanged { windows } => {
                     if let Some(mgr) = &manager {
                         for win in windows {
-                            mgr.process_window_opened(win).await;
+                            mgr.process_window_opened(win);
                         }
-                        mgr.process_event(&e).await;
+                        mgr.process_event(&e);
                     }
                 }
                 Event::WindowClosed { .. }
@@ -445,7 +463,7 @@ async fn start_central_listener_loop(connection: Connection, manager: Option<Arc
                 | Event::WindowUrgencyChanged { .. }
                 | Event::WindowFocusChanged { .. } => {
                     if let Some(mgr) = &manager {
-                        mgr.process_event(&e).await;
+                        mgr.process_event(&e);
                     }
                 }
             },
