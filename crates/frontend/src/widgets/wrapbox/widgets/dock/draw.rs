@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use backend::niri::IconKey;
+use backend::dock::icons::IconKey;
 use cairo::{Context, ImageSurface, Rectangle, SurfaceType};
 use config::def::widgets::wrapbox::dock::{DockConfig, ShowTitles};
 use cosmic_text::{CacheKey, Color, FontSystem, SwashCache};
@@ -89,6 +89,7 @@ pub fn paint(
                       line_height: f64,
                       font_family: &cosmic_text::Family,
                       wrap: bool,
+                      align_center: bool,
                       font_system: &mut FontSystem,
                       swash_cache: &mut SwashCache,
                       glyph_cache: &mut HashMap<CacheKey, ImageSurface>| {
@@ -116,7 +117,7 @@ pub fn paint(
         buffer.shape_until_scroll(font_system, true);
 
         let max_lines = if wrap {
-            (h_limit / font_height).floor() as usize
+            ((h_limit / font_height).round() as usize).max(1)
         } else {
             1
         };
@@ -127,8 +128,14 @@ pub fn paint(
             let center_offset_y = (h_limit - total_text_height) / 2.0;
 
             for run in buffer.layout_runs().take(visible_lines) {
+                let center_offset_x = if align_center {
+                    (w_limit - run.line_w as f64) / 2.0
+                } else {
+                    0.0
+                };
+
                 for glyph in run.glyphs.iter() {
-                    let line_start_x = x as f32;
+                    let line_start_x = (x + center_offset_x) as f32;
                     let line_start_y = (y + center_offset_y) as f32 + run.line_y;
 
                     let physical_glyph = glyph.physical((line_start_x, line_start_y), 1.0);
@@ -207,6 +214,7 @@ pub fn paint(
                 1.0,
                 &config.font_family.as_family(),
                 false,
+                true,
                 font_system,
                 swash_cache,
                 glyph_cache,
@@ -295,6 +303,7 @@ pub fn paint(
                         1.0,
                         &config.window_button.font_family.as_family(),
                         false,
+                        true,
                         font_system,
                         swash_cache,
                         glyph_cache,
@@ -319,16 +328,33 @@ pub fn paint(
                 continue;
             }
 
-            let title_x = item.icon_rect.x()
-                + if has_icon {
-                    item.icon_rect.width() + item_margins.left
+            let (_, _, title_rec, align_title_center) = if layout.is_vertical {
+                let tx = item.rect.x() + item_margins.left + config.window_button.border_width;
+                let ty = item.icon_rect.y() + item.icon_rect.height() + item_margins.top;
+                let t_width = item.rect.width()
+                    - (item_margins.left
+                        + item_margins.right
+                        + config.window_button.border_width * 2.0);
+                let t_height = title_width;
+                let trec = Rectangle::new(tx, ty, t_width, t_height);
+                (tx, ty, trec, true)
+            } else {
+                let tx = item.icon_rect.x()
+                    + if has_icon {
+                        item.icon_rect.width() + item_margins.left
+                    } else {
+                        0.0
+                    };
+                let ty = item.icon_rect.y();
+                let t_height = if item_wrap_titles {
+                    let max_h = item.rect.height() - (ty - item.rect.y());
+                    max_h.max(icon_size)
                 } else {
-                    0.0
+                    icon_size
                 };
-
-            let title_y = item.icon_rect.y();
-
-            let title_rec = Rectangle::new(title_x, title_y, title_width, icon_size);
+                let trec = Rectangle::new(tx, ty, title_width, t_height);
+                (tx, ty, trec, false)
+            };
 
             paint_text(
                 &cr,
@@ -339,6 +365,7 @@ pub fn paint(
                 item_line_height,
                 &config.window_button.font_family.as_family(),
                 item_wrap_titles,
+                align_title_center,
                 font_system,
                 swash_cache,
                 glyph_cache,

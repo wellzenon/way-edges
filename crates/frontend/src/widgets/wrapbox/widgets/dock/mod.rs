@@ -4,49 +4,40 @@ pub mod layout;
 use crate::mouse_state::MouseEvent;
 use crate::widgets::wrapbox::box_traits::BoxedWidget;
 use crate::widgets::wrapbox::BoxTemporaryCtx;
-use backend::niri::{IconKey, IconStatus, NiriManager};
+use backend::dock::icons::{IconKey, IconStatus};
+use backend::dock::{DockCB, DockData, DockHandler};
 use cairo::{Format, ImageSurface};
 use config::def::widgets::wrapbox::dock::DockConfig;
 use cosmic_text::{FontSystem, SwashCache};
 use smithay_client_toolkit::output::OutputData;
-use std::sync::mpsc;
-use std::{collections::HashMap, process::Command, sync::Arc};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use wayland_client::Proxy;
 
 use layout::DockLayout;
 
 #[derive(Debug)]
-pub struct DockWidget {
-    pub config: DockConfig,
-}
-
-impl DockWidget {
-    pub fn new(config: DockConfig) -> Self {
-        Self { config }
-    }
-}
-
-#[derive(Debug)]
 pub struct DockCtx {
-    pub output: String,
-    pub widget: DockWidget,
+    pub config: DockConfig,
     pub last_layout: DockLayout,
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     pub icon_surface_cache: HashMap<IconKey, ImageSurface>,
     pub glyph_cache: HashMap<cosmic_text::CacheKey, ImageSurface>,
-    pub niri_manager: Option<Arc<NiriManager>>,
+    pub dock_data: Rc<RefCell<DockData>>,
+    pub handler: DockHandler,
+    pub is_vertical: bool,
+    pub target_focus_id: Option<u64>,
 }
 
 impl DockCtx {
-    /// RECONCICLIATION: Tranforms the backend cache (NiriManager.icon_cache)
-    /// into Cairo ImageSurface and populates the frontend cache (icon_surface_cache)
-    fn reconcile_icons(&mut self, windows: &[niri_ipc::Window]) {
-        let Some(manager) = &self.niri_manager else {
-            return;
-        };
-        let backend_cache = manager.icon_cache.read().unwrap();
-        let config = &self.widget.config.window_button;
+    /// RECONCILIATION: Transforms the backend cache (`DockHandler.icon_cache`)
+    /// into Cairo `ImageSurface`s and populates the frontend cache (`icon_surface_cache`).
+    /// This keeps the UI rendering detached from backend image fetching logic.
+    fn reconcile_icons(&mut self, windows: &[backend::dock::DockWindowData]) {
+        let backend_cache = self.handler.icon_cache().read().unwrap();
+        let config = &self.config.window_button;
 
         for win in windows {
             let app_id = win.app_id.clone().unwrap_or_default();
@@ -89,63 +80,31 @@ impl DockCtx {
 
 impl BoxedWidget for DockCtx {
     fn content(&mut self) -> ImageSurface {
-        // 1. Extract worlspaces and windows state, initially
-        // TODO outputs state
-        let (workspaces, mut windows) = if let Some(manager) = &self.niri_manager {
-            let state = manager.state.write().unwrap();
-            // filter workspaces by output
-            let ws: std::collections::BTreeMap<_, _> = state
-                .workspaces
-                .iter()
-                .filter(|(_, w)| &w.output.as_deref().unwrap_or_default() == &self.output)
-                .map(|(&k, w)| (k, w.clone()))
-                .collect();
+        let dock_data = self.dock_data.borrow().clone();
 
-            // filter windows by workspace
-            let wins: Vec<_> = state
-                .windows
-                .values()
-                .filter(|w| w.workspace_id.map_or(false, |id| ws.contains_key(&id)))
-                .cloned()
-                .collect();
+        self.reconcile_icons(&dock_data.windows);
 
-            (ws, wins)
-        } else {
-            (std::collections::BTreeMap::new(), Vec::new())
-        };
-
-        // 2. order by workspace idx (position from top to bottom) then floats and last by window x,y position
-        windows.sort_by_key(|w| {
-            let ws_idx = workspaces
-                .get(&w.workspace_id.unwrap_or_default())
-                .map(|ws| ws.idx)
-                .unwrap_or_default();
-
-            (ws_idx, w.is_floating, w.layout.pos_in_scrolling_layout)
-        });
-
-        self.reconcile_icons(&windows);
-
-        // Builds the layout
+        // Calculate the positions and dimensions of all items based on agnostic data.
+        // The layout module does not know about Niri.
         self.last_layout = DockLayout::calculate(
-            &windows,
-            &workspaces,
-            &self.widget.config,
+            &dock_data,
+            &self.config,
             &mut self.icon_surface_cache,
             &mut self.font_system,
+            self.is_vertical,
         );
 
-        // 4. Main ImageSurface
+        // Allocate the main ImageSurface for Cairo rendering.
         let width = self.last_layout.total_width.max(1.0) as i32;
         let height = self.last_layout.total_height.max(1.0) as i32;
         let surface = ImageSurface::create(Format::ARgb32, width, height)
             .expect("Falha ao alocar buffer Cairo para a Dock");
 
-        // 5. Draws the dock
+        // Draws the dock
         draw::paint(
             &surface,
             &self.last_layout,
-            &self.widget.config,
+            &self.config,
             &self.icon_surface_cache,
             &mut self.font_system,
             &mut self.swash_cache,
@@ -156,70 +115,112 @@ impl BoxedWidget for DockCtx {
     }
 
     fn on_mouse_event(&mut self, event: MouseEvent) -> bool {
-        let (x, y, is_left, is_middle) = match event {
-            MouseEvent::Press((x, y), button) => (x, y, button == 272, button == 274),
-            MouseEvent::Motion((x, y)) => (x, y, false, false),
-            _ => return false,
-        };
+        match event {
+            MouseEvent::Press((x, y), button) => {
+                let is_left = button == 272;
+                let is_middle = button == 274;
 
-        if let Some(item) = self.last_layout.find_clicked_item(x, y) {
-            if is_left {
-                let _ = Command::new("niri")
-                    .args([
-                        "msg",
-                        "action",
-                        "focus-window",
-                        "--id",
-                        &item.id.to_string(),
-                    ])
-                    .spawn();
-                return true;
-            } else if is_middle {
-                let _ = Command::new("niri")
-                    .args([
-                        "msg",
-                        "action",
-                        "close-window",
-                        "--id",
-                        &item.id.to_string(),
-                    ])
-                    .spawn();
+                if let Some(item) = self.last_layout.find_clicked_item(x, y) {
+                    if is_left {
+                        self.handler.focus_window(item.id as u64);
+                        return true;
+                    } else if is_middle {
+                        self.handler.close_window(item.id as u64);
+                        return true;
+                    }
+                }
+                false
+            }
+            MouseEvent::Scroll(h, v) => {
+                let mut delta = v.discrete;
+                if delta == 0 {
+                    delta = h.discrete;
+                }
+                if delta == 0 {
+                    // Fallback to absolute for smooth scrolling (touchpads)
+                    if v.absolute > 5.0 || h.absolute > 5.0 {
+                        delta = 1;
+                    } else if v.absolute < -5.0 || h.absolute < -5.0 {
+                        delta = -1;
+                    } else {
+                        return false;
+                    }
+                }
+
+                let dock_data = self.dock_data.borrow();
+                let windows = &dock_data.windows;
+
+                if windows.is_empty() {
+                    return false;
+                }
+
+                // If we are scrolling rapidly, the backend might not have updated `w.is_focused` yet.
+                // We track our local `target_focus_id` to calculate the correct consecutive next/prev window.
+                let focused_idx = if let Some(target_id) = self.target_focus_id {
+                    windows.iter().position(|w| w.id == target_id).unwrap_or_else(|| {
+                        windows.iter().position(|w| w.is_focused).unwrap_or(0)
+                    })
+                } else {
+                    windows.iter().position(|w| w.is_focused).unwrap_or(0)
+                } as i32;
+
+                let new_idx = (focused_idx + delta).rem_euclid(windows.len() as i32);
+                let window_id = windows[new_idx as usize].id;
+
+                self.target_focus_id = Some(window_id);
+                drop(dock_data);
+                self.handler.focus_window(window_id);
                 return true;
             }
+            _ => false,
         }
-
-        false
     }
 }
 
+/// Initializes the Dock Widget state context.
+/// Establishes the communication channel (`calloop`) with the agnostic backend.
 pub fn init_widget(ctx: &mut BoxTemporaryCtx, config: DockConfig) -> DockCtx {
-    // redraw signal
-    let (redraw_tx, redraw_rx) = mpsc::channel::<()>();
-
-    let manager = backend::dock::niri::register_dock_listener(redraw_tx, &config);
-
-    let waker = ctx.make_redraw_ping();
-
     let output = if let Some(output_data) = &ctx.builder.output.data::<OutputData>() {
         output_data.with_output_info(|info| info.name.clone().unwrap_or_default())
     } else {
         String::new()
     };
 
-    std::thread::spawn(move || {
-        while redraw_rx.recv().is_ok() {
-            waker.ping();
+    let edge = ctx.builder.common_config.edge;
+    let is_vertical = edge.contains(smithay_client_toolkit::shell::wlr_layer::Anchor::LEFT)
+        || edge.contains(smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT);
+
+    let dock_data = Rc::new(RefCell::new(DockData::default()));
+    let dock_data_weak = Rc::downgrade(&dock_data);
+
+    // `make_redraw_channel` creates a `calloop::channel` internally.
+    // The provided closure runs in the main Wayland Event Loop when data is pushed from the backend.
+    // We update the local `RefCell` so that `BoxedWidget::content()` can draw the new state.
+    let sender = ctx.make_redraw_channel(move |_app, msg: DockData| {
+        if let Some(data) = dock_data_weak.upgrade() {
+            *data.borrow_mut() = msg;
         }
     });
 
+    let cb = DockCB::new(
+        sender,
+        output.clone(),
+        config.window_button.icon_size as u32,
+        config.window_button.icon_theme.clone(),
+        config.window_button.icon_fallback.clone(),
+    );
+    let handler = backend::dock::niri::register_dock_callback(cb);
+
     DockCtx {
-        output,
-        widget: DockWidget::new(config),
+        config,
         last_layout: DockLayout::default(),
         font_system: cosmic_text::FontSystem::new(),
         swash_cache: cosmic_text::SwashCache::new(),
         icon_surface_cache: HashMap::new(),
         glyph_cache: HashMap::new(),
-        niri_manager: manager,
+        dock_data,
+        handler,
+        is_vertical,
+        target_focus_id: None,
     }
 }

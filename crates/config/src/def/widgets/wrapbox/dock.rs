@@ -408,7 +408,15 @@ wrap-box {
                 assert_eq!(dock_config.border_width, 2);
                 assert_eq!(dock_config.border_radius, 15);
                 assert_eq!(dock_config.gap, 8);
-                assert_eq!(dock_config.margins, dt_margin());
+                assert_eq!(
+                    dock_config.margins,
+                    NumMargins {
+                        left: 4,
+                        right: 4,
+                        top: 4,
+                        bottom: 4,
+                    }
+                );
 
                 //window_button
                 assert_eq!(dock_config.window_button.font_size, 12);
@@ -423,7 +431,7 @@ wrap-box {
                     "Adwaita"
                 );
                 assert_eq!(dock_config.window_button.icon_size, 24.0);
-                assert_eq!(dock_config.window_button.line_height, 1.4);
+                assert_eq!(dock_config.window_button.line_height, 1.3);
                 assert_eq!(dock_config.window_button.icon_opacity, 0.5);
                 assert_eq!(dock_config.window_button.active_icon_opacity, 1.0);
                 assert_eq!(
@@ -453,7 +461,15 @@ wrap-box {
                 assert_eq!(dock_config.window_button.border_width, 2.0);
                 assert_eq!(dock_config.window_button.border_radius, 15.0);
                 assert_eq!(dock_config.window_button.gap, 4.0);
-                assert_eq!(dock_config.window_button.margins, dt_wb_margin());
+                assert_eq!(
+                    dock_config.window_button.margins,
+                    NumMargins {
+                        left: 2,
+                        right: 2,
+                        top: 2,
+                        bottom: 2,
+                    }
+                );
             } else {
                 panic!("Expected Dock widget");
             }
