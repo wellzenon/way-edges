@@ -142,30 +142,22 @@ impl NiriManager {
     /// by output, avoiding redundant linear searches and vector allocations.
     pub fn notify(&self) -> Option<DockData> {
         let cache = self.cache.read().unwrap();
-
-        // 1. Group workspaces by output, pre-sorted by index
-        let mut workspaces_by_output: HashMap<String, Vec<&Workspace>> = HashMap::new();
-        for w in cache.workspaces.values() {
-            let out = w.output.clone().unwrap_or_default();
-            workspaces_by_output.entry(out).or_default().push(w);
-        }
-        for wps in workspaces_by_output.values_mut() {
-            wps.sort_by_key(|w| w.idx);
-        }
+        let workspaces_by_output = sort_workspaces_by_outputs(&cache.workspaces);
+        let windows_by_output = sort_windows_by_outputs(&cache.workspaces, &cache.windows);
 
         // 2. Dispatch to Workspaces
         let focused_output = cache
             .workspaces
             .values()
             .find(|w| w.is_focused)
-            .and_then(|w| w.output.clone());
+            .and_then(|w| w.output.as_deref());
 
         self.workspace_registry
             .write()
             .unwrap()
             .call(|output, conf, focused_only| {
                 if focused_only {
-                    if let Some(ref focused) = focused_output {
+                    if let Some(focused) = focused_output {
                         if output != focused {
                             return None;
                         }
@@ -173,8 +165,12 @@ impl NiriManager {
                         return None;
                     }
                 }
-                let empty = Vec::new();
-                let wps = workspaces_by_output.get(output).unwrap_or(&empty);
+
+                let wps = workspaces_by_output
+                    .get(output)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+
                 Some(get_workspace_data_from_slice(wps, conf.preserve_empty))
             });
 
@@ -183,33 +179,10 @@ impl NiriManager {
             return None;
         }
 
-        // 3. Group windows by output and trigger icon loading in a single pass
-        let mut windows_by_output: HashMap<String, Vec<&Window>> = HashMap::new();
-        let workspace_to_output: HashMap<u64, &str> = cache
-            .workspaces
-            .iter()
-            .map(|(&id, w)| (id, w.output.as_deref().unwrap_or_default()))
-            .collect();
-
-        for window in cache.windows.values() {
-            if let Some(ws_id) = window.workspace_id {
-                if let Some(&window_output) = workspace_to_output.get(&ws_id) {
-                    windows_by_output
-                        .entry(window_output.to_string())
-                        .or_default()
-                        .push(window);
-                }
-            }
-        }
-
-        // Sorts windows by layout position
-        for wins in windows_by_output.values_mut() {
-            wins.sort_by_key(|w| (w.workspace_id, w.layout.pos_in_scrolling_layout));
-        }
-
-        let mut dock_registry = self.dock_registry.write().unwrap();
-        let mut dock_data = DockData::default();
         // 5. Dispatch to Docks
+        let mut dock_data = DockData::default();
+        let mut dock_registry = self.dock_registry.write().unwrap();
+
         dock_registry.call(|output| {
             let empty_wps = Vec::new();
             let empty_wins = Vec::new();
@@ -230,15 +203,11 @@ impl NiriManager {
         let cache = self.cache.read().unwrap();
         let dock_registry = self.dock_registry.read().unwrap();
 
-        let workspace_to_output: HashMap<u64, &str> = cache
-            .workspaces
-            .iter()
-            .map(|(&id, w)| (id, w.output.as_deref().unwrap_or_default()))
-            .collect();
+        let workspace_mapped_to_output = map_workspaces_to_outputs(&cache.workspaces);
 
         for window in cache.windows.values() {
             if let Some(ws_id) = window.workspace_id {
-                if let Some(&window_output) = workspace_to_output.get(&ws_id) {
+                if let Some(&window_output) = workspace_mapped_to_output.get(&ws_id) {
                     for cb in dock_registry.iter() {
                         if cb.output == window_output {
                             let app_id = window.app_id.clone().unwrap_or_default();
@@ -248,32 +217,18 @@ impl NiriManager {
                                 size: cb.icon_size,
                                 fallback: cb.icon_fallback.clone(),
                             };
+
                             ensure_icon_loaded(&self.icon_cache, icon_key, || {
                                 let manager = get_manager();
                                 let cache = manager.cache.read().unwrap();
                                 manager.dock_registry.write().unwrap().call(|output| {
-                                    // 1. Filter and sort workspaces for this output
-                                    let mut wps: Vec<&Workspace> = cache
-                                        .workspaces
-                                        .values()
-                                        .filter(|w| {
-                                            w.output.as_deref().unwrap_or_default() == output
-                                        })
-                                        .collect();
-                                    wps.sort_by_key(|w| w.idx);
-
-                                    // 2. Filter and sort windows for this output
-                                    let ws_ids: Vec<u64> = wps.iter().map(|w| w.id).collect();
-                                    let mut wins: Vec<&Window> = cache
-                                        .windows
-                                        .values()
-                                        .filter(|w| {
-                                            w.workspace_id.map_or(false, |id| ws_ids.contains(&id))
-                                        })
-                                        .collect();
-                                    wins.sort_by_key(|w| {
-                                        (w.workspace_id, w.layout.pos_in_scrolling_layout)
-                                    });
+                                    let wps = sort_workspaces_by_outputs(&cache.workspaces)
+                                        .remove(output)
+                                        .unwrap_or_default();
+                                    let wins =
+                                        sort_windows_by_outputs(&cache.workspaces, &cache.windows)
+                                            .remove(output)
+                                            .unwrap_or_default();
 
                                     (manager.build_dock_data(&wps, &wins), true)
                                 });
@@ -407,6 +362,53 @@ fn get_workspace_data(cache: &DataCache, output: &str, preserve_empty: bool) -> 
     get_workspace_data_from_slice(&wps_for_output, preserve_empty)
 }
 
+fn map_workspaces_to_outputs(workspaces: &BTreeMap<u64, Workspace>) -> HashMap<u64, &str> {
+    workspaces
+        .iter()
+        .map(|(&id, w)| (id, w.output.as_deref().unwrap_or_default()))
+        .collect()
+}
+
+fn sort_windows_by_outputs<'w>(
+    workspaces: &BTreeMap<u64, Workspace>,
+    windows: &'w BTreeMap<u64, Window>,
+) -> HashMap<String, Vec<&'w Window>> {
+    let workspace_to_output = map_workspaces_to_outputs(workspaces);
+    let mut windows_by_outputs: HashMap<String, Vec<&Window>> = HashMap::new();
+
+    for window in windows.values() {
+        if let Some(ws_id) = window.workspace_id {
+            if let Some(&window_output) = workspace_to_output.get(&ws_id) {
+                windows_by_outputs
+                    .entry(window_output.to_string())
+                    .or_default()
+                    .push(window);
+            }
+        }
+    }
+
+    // Sorts windows by layout position
+    for wins in windows_by_outputs.values_mut() {
+        wins.sort_by_key(|w| (w.workspace_id, w.layout.pos_in_scrolling_layout));
+    }
+
+    windows_by_outputs
+}
+
+fn sort_workspaces_by_outputs(
+    workspaces: &BTreeMap<u64, Workspace>,
+) -> HashMap<String, Vec<&Workspace>> {
+    let mut workspaces_by_outputs: HashMap<String, Vec<&Workspace>> = HashMap::new();
+    for w in workspaces.values() {
+        let out = w.output.clone().unwrap_or_default();
+        workspaces_by_outputs.entry(out).or_default().push(w);
+    }
+    for wps in workspaces_by_outputs.values_mut() {
+        wps.sort_by_key(|w| w.idx);
+    }
+    workspaces_by_outputs
+}
+
 pub fn get_workspace_by_index<'a>(
     cache: &'a DataCache,
     output: &str,
@@ -538,19 +540,19 @@ pub async fn process_event_internal(e: Event) {
     {
         let mut cache = manager.cache.write().unwrap();
 
-        match &e {
+        match e {
             Event::WorkspacesChanged { workspaces } => {
                 cache.workspaces.clear();
                 cache
                     .workspaces
-                    .extend(workspaces.iter().map(|w| (w.id, w.clone())));
+                    .extend(workspaces.into_iter().map(|w| (w.id, w)));
             }
             Event::WorkspaceActivated { id, focused } => {
-                if let Some(output) = cache.workspaces.get(id).map(|w| w.output.clone()) {
+                if let Some(output) = cache.workspaces.get(&id).map(|w| w.output.clone()) {
                     for (ws_id, ws) in cache.workspaces.iter_mut() {
                         if ws.output == output {
-                            let should_be_active = ws_id == id;
-                            let should_be_focused = should_be_active && *focused;
+                            let should_be_active = *ws_id == id;
+                            let should_be_focused = should_be_active && focused;
                             if ws.is_active != should_be_active
                                 || ws.is_focused != should_be_focused
                             {
@@ -564,9 +566,7 @@ pub async fn process_event_internal(e: Event) {
             Event::WindowsChanged { windows } => {
                 if manager.needs_windows.load(Ordering::Relaxed) {
                     cache.windows.clear();
-                    cache
-                        .windows
-                        .extend(windows.iter().map(|w| (w.id, w.clone())));
+                    cache.windows.extend(windows.into_iter().map(|w| (w.id, w)));
                     load_icons = true;
                 }
             }
@@ -578,20 +578,20 @@ pub async fn process_event_internal(e: Event) {
                             .values_mut()
                             .for_each(|w| w.is_focused = false);
                     }
-                    cache.windows.insert(window.id, window.clone());
+                    cache.windows.insert(window.id, window);
                     load_icons = true;
                 }
             }
             Event::WindowClosed { id } => {
                 if manager.needs_windows.load(Ordering::Relaxed) {
-                    cache.windows.remove(id);
+                    cache.windows.remove(&id);
                 }
             }
             Event::WindowFocusChanged { id } => {
                 if manager.needs_windows.load(Ordering::Relaxed) {
                     if let Some(focused_id) = id {
                         for (win_id, win) in cache.windows.iter_mut() {
-                            let should_be_focused = win_id == focused_id;
+                            let should_be_focused = *win_id == focused_id;
                             if win.is_focused != should_be_focused {
                                 win.is_focused = should_be_focused;
                             }
@@ -601,9 +601,9 @@ pub async fn process_event_internal(e: Event) {
             }
             Event::WindowUrgencyChanged { id, is_urgent } => {
                 if manager.needs_windows.load(Ordering::Relaxed) {
-                    if let Some(win) = cache.windows.get_mut(id) {
-                        if win.is_urgent != *is_urgent {
-                            win.is_urgent = *is_urgent;
+                    if let Some(win) = cache.windows.get_mut(&id) {
+                        if win.is_urgent != is_urgent {
+                            win.is_urgent = is_urgent;
                         }
                     }
                 }
@@ -611,9 +611,9 @@ pub async fn process_event_internal(e: Event) {
             Event::WindowLayoutsChanged { changes, .. } => {
                 if manager.needs_windows.load(Ordering::Relaxed) {
                     for (id, new_layout) in changes {
-                        if let Some(win) = cache.windows.get_mut(id) {
-                            if win.layout != *new_layout {
-                                win.layout = new_layout.clone();
+                        if let Some(win) = cache.windows.get_mut(&id) {
+                            if win.layout != new_layout {
+                                win.layout = new_layout;
                             }
                         }
                     }
