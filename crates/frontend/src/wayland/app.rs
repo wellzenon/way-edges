@@ -103,7 +103,11 @@ impl App {
 
             // and tipically this should be Ok() since no other references should exist
             match mtx.into_inner() {
-                Ok(mut w) => w.clear_contents(self),
+                Ok(mut w) => {
+                    if w.configured {
+                        w.clear_contents(self);
+                    }
+                }
                 Err(e) => {
                     log::error!(
                         "Failed to clear widget contents during reload, mutex of this widget is poisoned: {e}"
