@@ -17,8 +17,9 @@ pub fn paint(
     swash_cache: &mut SwashCache,
     glyph_cache: &mut HashMap<CacheKey, ImageSurface>,
 ) {
-    let font_size = config.font_size;
+    let is_vertical = layout.is_vertical;
 
+    let font_size = config.font_size;
     let workspace_titles = config.workspace_titles;
 
     let icon_size = config.window_button.icon_size as f64;
@@ -328,44 +329,16 @@ pub fn paint(
                 continue;
             }
 
-            let (_, _, title_rec, align_title_center) = if layout.is_vertical {
-                let tx = item.rect.x() + item_margins.left + config.window_button.border_width;
-                let ty = item.icon_rect.y() + item.icon_rect.height() + item_margins.top;
-                let t_width = item.rect.width()
-                    - (item_margins.left
-                        + item_margins.right
-                        + config.window_button.border_width * 2.0);
-                let t_height = title_width;
-                let trec = Rectangle::new(tx, ty, t_width, t_height);
-                (tx, ty, trec, true)
-            } else {
-                let tx = item.icon_rect.x()
-                    + if has_icon {
-                        item.icon_rect.width() + item_margins.left
-                    } else {
-                        0.0
-                    };
-                let ty = item.icon_rect.y();
-                let t_height = if item_wrap_titles {
-                    let max_h = item.rect.height() - (ty - item.rect.y());
-                    max_h.max(icon_size)
-                } else {
-                    icon_size
-                };
-                let trec = Rectangle::new(tx, ty, title_width, t_height);
-                (tx, ty, trec, false)
-            };
-
             paint_text(
                 &cr,
                 title,
-                &title_rec,
+                &item.title_rect,
                 base_color,
                 item_font_size,
                 item_line_height,
                 &config.window_button.font_family.as_family(),
                 item_wrap_titles,
-                align_title_center,
+                is_vertical,
                 font_system,
                 swash_cache,
                 glyph_cache,

@@ -30,6 +30,7 @@ impl From<&NumMargins> for MarginsF64 {
 pub struct DockItem {
     pub rect: Rectangle,
     pub icon_rect: Rectangle,
+    pub title_rect: Rectangle,
     pub id: f64,
     pub app_id: Option<String>,
     pub title: Option<String>,
@@ -109,18 +110,8 @@ impl DockLayout {
         let title_width = config.window_button.title_width as f64;
         let item_margins: MarginsF64 = (&config.window_button.margins).into();
 
-        let title_height =
-            if show_titles != ShowTitles::Never && config.window_button.wrap_titles && !is_vertical
-            {
-                let font_height =
-                    config.window_button.font_size as f64 * config.window_button.line_height;
-                icon_size.max(font_height * 2.0)
-            } else {
-                icon_size
-            };
-
         let item_height =
-            item_border_width * 2.0 + item_margins.top + item_margins.bottom + title_height;
+            item_border_width * 2.0 + item_margins.top + item_margins.bottom + icon_size;
 
         let ws_height = border_width * 2.0 + margins.top + margins.bottom + item_height;
         let font_size = config.font_size as f32;
@@ -245,13 +236,24 @@ impl DockLayout {
 
                         item_width += icon_rect.width();
 
-                        if has_title {
-                            item_width += title_width;
-                        }
+                        let title_rect = if has_title {
+                            if is_icon_enabled && icon_rect.width() > 0.0 {
+                                item_width += item_margins.left;
+                            }
+                            let rec = verticalize_rect(
+                                current_x + item_width,
+                                item_y + item_margins.top,
+                                title_width,
+                                icon_size,
+                                is_vertical,
+                            );
 
-                        if has_title && is_icon_enabled && icon_rect.width() > 0.0 {
-                            item_width += item_margins.left;
-                        }
+                            item_width += title_width;
+
+                            rec
+                        } else {
+                            Rectangle::new(0.0, 0.0, 0.0, 0.0)
+                        };
 
                         let item_rec = verticalize_rect(
                             current_x,
@@ -265,6 +267,7 @@ impl DockLayout {
                         DockItem {
                             rect: item_rec,
                             icon_rect,
+                            title_rect,
                             id: win.id as f64,
                             app_id: win.app_id.clone(),
                             title: win.title.clone(),
