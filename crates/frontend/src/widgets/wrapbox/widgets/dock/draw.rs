@@ -6,7 +6,7 @@ use config::def::widgets::wrapbox::dock::{DockConfig, ShowTitles};
 use cosmic_text::{CacheKey, Color, FontSystem, SwashCache};
 use util::color::cairo_set_color;
 
-use crate::widgets::wrapbox::widgets::dock::layout::{DockLayout, MarginsF64};
+use crate::widgets::wrapbox::widgets::dock::layout::DockLayout;
 
 pub fn paint(
     surface: &ImageSurface,
@@ -22,25 +22,17 @@ pub fn paint(
     let font_size = config.font_size;
     let workspace_titles = config.workspace_titles;
 
-    let icon_size = config.window_button.icon_size as f64;
     let show_titles = config.window_button.show_titles;
     let title_width = config.window_button.title_width as f64;
-    let item_margins = MarginsF64 {
-        left: config.window_button.margins.left as f64,
-        right: config.window_button.margins.right as f64,
-        top: config.window_button.margins.top as f64,
-        bottom: config.window_button.margins.bottom as f64,
-    };
     let item_wrap_titles = config.window_button.wrap_titles;
     let item_font_size = config.window_button.font_size;
     let item_line_height = config.window_button.line_height;
 
-    let cr = Context::new(surface).expect("Failed to create Cairo context");
-
-    // 2. DESENHO DO ÍCONE (Tratamento Híbrido SVG/PNG)
+    let icon_size = config.window_button.icon_size as f64;
     let has_icon = show_titles != ShowTitles::Only;
 
-    // Encapsulate structural pathing to reduce boilerplate in the main drawing loop
+    let cr = Context::new(surface).expect("Failed to create Cairo context");
+
     fn draw_rounded_rect(
         cr: &Context,
         rect: &Rectangle,
@@ -82,18 +74,20 @@ pub fn paint(
         }
     }
 
-    let paint_text = |cr: &Context,
-                      text: &str,
-                      rect: &Rectangle,
-                      color: Color,
-                      font_size: i32,
-                      line_height: f64,
-                      font_family: &cosmic_text::Family,
-                      wrap: bool,
-                      align_center: bool,
-                      font_system: &mut FontSystem,
-                      swash_cache: &mut SwashCache,
-                      glyph_cache: &mut HashMap<CacheKey, ImageSurface>| {
+    fn paint_text(
+        cr: &Context,
+        text: &str,
+        rect: &Rectangle,
+        color: Color,
+        font_size: i32,
+        line_height: f64,
+        font_family: &cosmic_text::Family,
+        wrap: bool,
+        align_center: bool,
+        font_system: &mut FontSystem,
+        swash_cache: &mut SwashCache,
+        glyph_cache: &mut HashMap<CacheKey, ImageSurface>,
+    ) -> () {
         let (x, y, w_limit, h_limit) = (rect.x(), rect.y(), rect.width(), rect.height());
 
         if text.is_empty() || w_limit <= 0.0 {
@@ -187,7 +181,7 @@ pub fn paint(
             }
         }
         cr.restore().unwrap();
-    };
+    }
 
     for ws in &layout.workspaces {
         let (ws_fg_color, ws_bg_color) = if ws.is_focused {

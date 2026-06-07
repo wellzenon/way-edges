@@ -145,18 +145,17 @@ impl DockLayout {
                     // Workspace Tag won't be transposed, will stay uprigth no matter if the dock
                     // is horizontal or vetical, so won't use the fn verticalize_rec. But it's x and
                     // y will still swap places in the vertical layout
-                    let (tag_x, tag_y, tag_width, tag_height) = if is_vertical {
-                        (ws_y, current_x, ws_height, rect_height)
+
+                    let rect = if is_vertical {
+                        Rectangle::new(ws_y, current_x, ws_height, rect_height)
                     } else {
-                        (current_x, ws_y, rect_width, ws_height)
+                        Rectangle::new(current_x, ws_y, rect_width, ws_height)
                     };
 
-                    let tag_rec = Rectangle::new(tag_x, tag_y, tag_width, tag_height);
-
                     current_x +=
-                        margins.left as f64 + if is_vertical { tag_height } else { tag_width };
+                        margins.left as f64 + if is_vertical { rect_height } else { rect_width };
 
-                    tag_rec
+                    rect
                 } else {
                     Rectangle::new(0.0, 0.0, 0.0, 0.0)
                 };
@@ -173,9 +172,7 @@ impl DockLayout {
                             ShowTitles::Focused if win.is_focused => true,
                             _ => false,
                         };
-
-                        let mut item_width =
-                            item_margins.left + item_margins.right + item_border_width * 2.0;
+                        let item_x = current_x;
 
                         let app_id = win.app_id.clone().unwrap_or_default();
 
@@ -186,6 +183,8 @@ impl DockLayout {
                             fallback: icon_fallback.clone(),
                         };
 
+                        current_x += item_margins.left + item_border_width;
+
                         let (icon_rect, has_resolved_icon, fallback_char) = if is_icon_enabled {
                             let (icon_width, icon_height, has_resolved_icon) =
                                 if let Some(surface) = icon_surface_cache.get(&icon_key) {
@@ -195,7 +194,7 @@ impl DockLayout {
                                 };
 
                             let icon_rec = verticalize_rect(
-                                current_x + item_margins.left + item_border_width,
+                                current_x,
                                 item_y + item_margins.top + item_border_width,
                                 icon_width,
                                 icon_height,
@@ -224,7 +223,7 @@ impl DockLayout {
                             );
 
                             let icon_rec = verticalize_rect(
-                                current_x + item_margins.left + item_border_width,
+                                current_x,
                                 item_y + item_margins.top + item_border_width,
                                 width,
                                 height,
@@ -234,35 +233,34 @@ impl DockLayout {
                             (icon_rec, false, fallback_char)
                         };
 
-                        item_width += icon_rect.width();
+                        current_x += icon_rect.width();
 
                         let title_rect = if has_title {
                             if is_icon_enabled && icon_rect.width() > 0.0 {
-                                item_width += item_margins.left;
+                                current_x += item_margins.left;
                             }
                             let rec = verticalize_rect(
-                                current_x + item_width,
+                                current_x,
                                 item_y + item_margins.top,
                                 title_width,
                                 icon_size,
                                 is_vertical,
                             );
 
-                            item_width += title_width;
+                            current_x += title_width;
 
                             rec
                         } else {
                             Rectangle::new(0.0, 0.0, 0.0, 0.0)
                         };
 
-                        let item_rec = verticalize_rect(
-                            current_x,
-                            item_y,
-                            item_width,
-                            item_height,
-                            is_vertical,
-                        );
-                        current_x += item_width + item_gap;
+                        current_x += item_margins.right + item_border_width;
+                        let item_width = current_x - item_x;
+
+                        let item_rec =
+                            verticalize_rect(item_x, item_y, item_width, item_height, is_vertical);
+
+                        current_x += item_gap;
 
                         DockItem {
                             rect: item_rec,
@@ -279,7 +277,7 @@ impl DockLayout {
                     })
                     .collect();
 
-                current_x -= item_gap;
+                current_x -= item_gap; // last item has no gap
                 current_x += margins.right + border_width;
 
                 let ws_width = current_x - ws_x;
@@ -299,7 +297,7 @@ impl DockLayout {
             })
             .collect();
 
-        current_x -= gap;
+        current_x -= gap; // last workspace has no gap
 
         if is_vertical {
             DockLayout {
