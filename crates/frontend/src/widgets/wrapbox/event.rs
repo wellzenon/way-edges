@@ -73,9 +73,6 @@ impl LastWidget {
     fn take_current(&mut self) -> Option<BoxedWidgetCtxRc> {
         self.current_widget.take().map(|w| w.upgrade().unwrap())
     }
-    fn get_current(&self) -> Option<BoxedWidgetCtxRc> {
-        self.current_widget.as_ref().and_then(|w| w.upgrade())
-    }
 }
 
 fn match_item(
@@ -136,7 +133,7 @@ pub fn on_mouse_event(event: MouseEvent, ctx: &mut BoxContext) -> bool {
             }
         }
         common_event => {
-            if let Some(last) = ctx.last_widget.get_current() {
+            if let Some(last) = ctx.last_widget.take_current() {
                 redraw.or(last.borrow_mut().on_mouse_event(common_event));
             }
         }

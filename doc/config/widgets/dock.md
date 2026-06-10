@@ -1,8 +1,13 @@
 # Dock
 
 ```kdl
-item "dock" {
-    index 0 0
+dock {
+    edge "bottom"
+    // monitor 0
+    // layer "top"
+    // offset 0
+    // namespace "my-dock"
+
     grid-align "center-center"
     font-family "mono"
     font-size 26

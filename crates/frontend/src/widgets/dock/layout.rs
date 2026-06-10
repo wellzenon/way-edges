@@ -4,7 +4,7 @@ use backend::dock::icons::IconKey;
 use backend::dock::DockData;
 use cairo::{ImageSurface, Rectangle};
 use config::def::shared::NumMargins;
-use config::def::widgets::wrapbox::dock::{DockConfig, ShowTitles};
+use config::def::widgets::dock::{DockConfig, ShowTitles};
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
 
 #[derive(Debug, Clone, Copy)]
@@ -27,7 +27,7 @@ impl From<&NumMargins> for MarginsF64 {
 }
 
 #[derive(Debug, Clone)]
-pub struct DockItem {
+pub struct DockWindow {
     pub rect: Rectangle,
     pub icon_rect: Rectangle,
     pub title_rect: Rectangle,
@@ -40,7 +40,7 @@ pub struct DockItem {
     pub fallback_char: String,
 }
 
-impl DockItem {
+impl DockWindow {
     pub fn contains(&self, px: f64, py: f64) -> bool {
         px >= self.rect.x()
             && px <= (self.rect.x() + self.rect.width())
@@ -56,7 +56,7 @@ pub struct DockWorkspace {
     pub tag_name: Option<String>,
     pub is_focused: bool,
     pub separator_rect: Rectangle,
-    pub items: Vec<DockItem>,
+    pub windows: Vec<DockWindow>,
 }
 
 impl DockWorkspace {
@@ -68,15 +68,22 @@ impl DockWorkspace {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DockLayout {
+    pub rect: Rectangle,
     pub workspaces: Vec<DockWorkspace>,
-    pub total_width: f64,
-    pub total_height: f64,
     pub is_vertical: bool,
 }
 
 impl DockLayout {
+    pub fn new() -> Self {
+        DockLayout {
+            rect: Rectangle::new(0.0, 0.0, 0.0, 0.0),
+            workspaces: Vec::new(),
+            is_vertical: false,
+        }
+    }
+
     pub fn calculate(
         dock_data: &DockData,
         config: &DockConfig,
@@ -84,55 +91,59 @@ impl DockLayout {
         font_system: &mut FontSystem,
         is_vertical: bool,
     ) -> Self {
-        let windows = &dock_data.windows;
-        let workspaces = &dock_data.workspaces;
-        let mut current_x = 0.0;
-        let ws_y = 0.0;
+        let dock_border_width = config.border_width;
+        let dock_gap = config.gap;
+        let dock_margins: MarginsF64 = (&config.margins).into();
 
-        let border_width = config.border_width as f64;
-        let gap = config.gap as f64;
-        let margins: MarginsF64 = (&config.margins).into();
-        let workspace_titles = config.workspace_titles;
+        let wk_border_width = config.workspaces.border_width;
+        let wk_gap = config.workspaces.gap;
+        let wk_margins: MarginsF64 = (&config.workspaces.margins).into();
+        let wk_show_titles = config.workspaces.show_titles;
+        let wk_font_size = config.workspaces.font_size as f32;
+        let wk_y = dock_border_width + dock_margins.top;
 
-        let item_y = ws_y + border_width + margins.top;
-        let item_border_width = config.window_button.border_width as f64;
-        let item_gap = config.window_button.gap as f64;
-        let icon_size = config.window_button.icon_size as f64;
+        let win_y = wk_y + wk_border_width + wk_margins.top;
+        let win_border_width = config.windows.border_width;
+        let win_gap = config.windows.gap;
+        let win_margins: MarginsF64 = (&config.windows.margins).into();
 
-        let icon_theme = &config.window_button.icon_theme;
-        let icon_fallback = &config.window_button.icon_fallback;
-        let show_titles = config.window_button.show_titles;
-        let is_icon_enabled = show_titles != ShowTitles::Only && icon_size > 0.0;
+        let icon_size = config.windows.icon_size;
+        let icon_theme = &config.windows.icon_theme;
+        let icon_fallback = &config.windows.icon_fallback;
+        let win_show_titles = config.windows.show_titles;
+        let is_icon_enabled = win_show_titles != ShowTitles::Only && icon_size > 0.0;
 
-        let title_width = config.window_button.title_width as f64;
-        let item_margins: MarginsF64 = (&config.window_button.margins).into();
+        let win_title_width = config.windows.title_width;
 
-        let item_height =
-            item_border_width * 2.0 + item_margins.top + item_margins.bottom + icon_size;
+        let win_height = icon_size + win_border_width * 2.0 + win_margins.top + win_margins.bottom;
+        let wk_height = win_height + wk_border_width * 2.0 + wk_margins.top + wk_margins.bottom;
+        let dock_height =
+            wk_height + dock_border_width * 2.0 + dock_margins.top + dock_margins.bottom;
 
-        let ws_height = border_width * 2.0 + margins.top + margins.bottom + item_height;
-        let font_size = config.font_size as f32;
+        let mut current_main_axis = dock_border_width + dock_margins.left;
 
-        let ws_vec: Vec<DockWorkspace> = windows
+        let workspaces: Vec<DockWorkspace> = dock_data
+            .windows
             .chunk_by(|a, b| a.workspace_id == b.workspace_id)
             .enumerate()
-            .map(|(idx, ws)| {
-                let ws_id = ws[0].workspace_id.unwrap_or(0) as i32;
-                let ws_x = current_x;
+            .map(|(idx, wins)| {
+                let wk_id = wins[0].workspace_id.unwrap_or(0) as i32;
+                let wk_x = current_main_axis;
 
-                current_x += border_width + margins.left;
+                current_main_axis += wk_border_width + wk_margins.left;
 
-                let name = workspaces
-                    .get(&(ws_id as u64))
+                let name = dock_data
+                    .workspaces
+                    .get(&(wk_id as u64))
                     .map(|w| w.name.clone().or_else(|| Some(w.idx.to_string())))
                     .unwrap_or_default();
 
-                let tag_rect = if name.is_some() && workspace_titles {
+                let tag_rect = if name.is_some() && wk_show_titles {
                     let (rect_width, rect_height) = measure_text(
                         font_system,
                         name.as_deref().unwrap(),
-                        font_size,
-                        config.font_family.as_family(),
+                        wk_font_size,
+                        config.workspaces.font_family.as_family(),
                     );
 
                     // Workspace Tag won't be transposed, will stay uprigth no matter if the dock
@@ -141,41 +152,41 @@ impl DockLayout {
 
                     let rect = if is_vertical {
                         Rectangle::new(
-                            ws_y.round(),
-                            current_x.round(),
-                            ws_height.round(),
+                            wk_y.round(),
+                            current_main_axis.round(),
+                            wk_height.round(),
                             rect_height.round(),
                         )
                     } else {
                         Rectangle::new(
-                            current_x.round(),
-                            ws_y.round(),
+                            current_main_axis.round(),
+                            wk_y.round(),
                             rect_width.round(),
-                            ws_height.round(),
+                            wk_height.round(),
                         )
                     };
 
-                    current_x +=
-                        margins.left as f64 + if is_vertical { rect_height } else { rect_width };
+                    current_main_axis +=
+                        wk_margins.left as f64 + if is_vertical { rect_height } else { rect_width };
 
                     rect
                 } else {
                     Rectangle::new(0.0, 0.0, 0.0, 0.0)
                 };
 
-                let mut ws_focused = false;
+                let mut wk_focused = false;
 
-                let items: Vec<DockItem> = ws
+                let windows: Vec<DockWindow> = wins
                     .iter()
                     .map(|win| {
-                        ws_focused = ws_focused || win.is_focused;
+                        wk_focused = wk_focused || win.is_focused;
 
-                        let has_title = match show_titles {
+                        let has_title = match win_show_titles {
                             ShowTitles::Always | ShowTitles::Only => true,
                             ShowTitles::Focused if win.is_focused => true,
                             _ => false,
                         };
-                        let item_x = current_x;
+                        let win_x = current_main_axis;
 
                         let app_id = win.app_id.clone().unwrap_or_default();
 
@@ -186,7 +197,7 @@ impl DockLayout {
                             fallback: icon_fallback.clone(),
                         };
 
-                        current_x += item_margins.left + item_border_width;
+                        current_main_axis += win_margins.left + win_border_width;
 
                         let (icon_rect, has_resolved_icon, fallback_char) = if is_icon_enabled {
                             let (icon_width, icon_height, has_resolved_icon) =
@@ -197,8 +208,8 @@ impl DockLayout {
                                 };
 
                             let icon_rec = verticalize_rect(
-                                current_x,
-                                item_y + item_margins.top + item_border_width,
+                                current_main_axis,
+                                win_y + win_margins.top + win_border_width,
                                 icon_width,
                                 icon_height,
                                 is_vertical,
@@ -221,13 +232,13 @@ impl DockLayout {
                             let (width, height) = measure_text(
                                 font_system,
                                 &fallback_char,
-                                font_size,
-                                config.font_family.as_family(),
+                                wk_font_size,
+                                config.workspaces.font_family.as_family(),
                             );
 
                             let icon_rec = verticalize_rect(
-                                current_x,
-                                item_y + item_margins.top + item_border_width,
+                                current_main_axis,
+                                win_y + win_margins.top + win_border_width,
                                 width,
                                 height,
                                 is_vertical,
@@ -236,37 +247,37 @@ impl DockLayout {
                             (icon_rec, false, fallback_char)
                         };
 
-                        current_x += icon_rect.width();
+                        current_main_axis += icon_rect.width();
 
                         let title_rect = if has_title {
                             if is_icon_enabled && icon_rect.width() > 0.0 {
-                                current_x += item_margins.left;
+                                current_main_axis += win_gap;
                             }
                             let rec = verticalize_rect(
-                                current_x,
-                                item_y + item_margins.top,
-                                title_width,
+                                current_main_axis,
+                                win_y + win_margins.top,
+                                win_title_width,
                                 icon_size,
                                 is_vertical,
                             );
 
-                            current_x += title_width;
+                            current_main_axis += win_title_width;
 
                             rec
                         } else {
                             Rectangle::new(0.0, 0.0, 0.0, 0.0)
                         };
 
-                        current_x += item_margins.right + item_border_width;
-                        let item_width = current_x - item_x;
+                        current_main_axis += win_margins.right + win_border_width;
+                        let win_width = current_main_axis - win_x;
 
-                        let item_rec =
-                            verticalize_rect(item_x, item_y, item_width, item_height, is_vertical);
+                        let win_rec =
+                            verticalize_rect(win_x, win_y, win_width, win_height, is_vertical);
 
-                        current_x += item_gap;
+                        current_main_axis += wk_gap;
 
-                        DockItem {
-                            rect: item_rec,
+                        DockWindow {
+                            rect: win_rec,
                             icon_rect,
                             title_rect,
                             id: win.id as f64,
@@ -280,21 +291,21 @@ impl DockLayout {
                     })
                     .collect();
 
-                current_x -= item_gap; // last item has no gap
-                current_x += margins.right + border_width;
+                current_main_axis -= wk_gap; // last item has no gap
+                current_main_axis += wk_margins.right + wk_border_width;
 
-                let ws_width = current_x - ws_x;
+                let wk_width = current_main_axis - wk_x;
 
-                let ws_rect = verticalize_rect(ws_x, ws_y, ws_width, ws_height, is_vertical);
+                let wk_rect = verticalize_rect(wk_x, wk_y, wk_width, wk_height, is_vertical);
 
-                let sep_height = ws_height - 2.0 * config.separator_margin;
+                let sep_height = wk_height - 2.0 * config.separator_margin;
                 let separator_rect = if config.separator_width > 0.0
                     && config.separator_width < config.gap as f64
                     && sep_height > 0.0
                     && idx > 0
                 {
-                    let sep_x = ws_x - (config.separator_width + gap) / 2.0;
-                    let sep_y = ws_y + config.separator_margin;
+                    let sep_x = wk_x - (config.separator_width + dock_gap) / 2.0;
+                    let sep_y = wk_y + config.separator_margin;
 
                     verticalize_rect(
                         sep_x,
@@ -307,43 +318,36 @@ impl DockLayout {
                     Rectangle::new(0.0, 0.0, 0.0, 0.0)
                 };
 
-                current_x += gap;
+                current_main_axis += dock_gap;
 
                 DockWorkspace {
-                    rect: ws_rect,
+                    rect: wk_rect,
                     tag_rect,
                     tag_name: name,
-                    is_focused: ws_focused,
+                    is_focused: wk_focused,
                     separator_rect,
-                    items,
+                    windows,
                 }
             })
             .collect();
 
-        current_x -= gap; // last workspace has no gap
+        current_main_axis -= dock_gap; // last workspace has no gap
+        current_main_axis += dock_margins.right + dock_border_width;
 
-        if is_vertical {
-            DockLayout {
-                workspaces: ws_vec,
-                total_width: ws_height,
-                total_height: current_x,
-                is_vertical: true,
-            }
-        } else {
-            DockLayout {
-                workspaces: ws_vec,
-                total_width: current_x,
-                total_height: ws_height,
-                is_vertical: false,
-            }
+        let dock_rect = verticalize_rect(0.0, 0.0, current_main_axis, dock_height, is_vertical);
+
+        DockLayout {
+            rect: dock_rect,
+            workspaces,
+            is_vertical,
         }
     }
 
-    pub fn find_clicked_item(&self, x: f64, y: f64) -> Option<&DockItem> {
+    pub fn find_clicked_item(&self, x: f64, y: f64) -> Option<&DockWindow> {
         self.workspaces
             .iter()
             .find(|ws| ws.contains(x, y))
-            .and_then(|ws| ws.items.iter().find(|item| item.contains(x, y)))
+            .and_then(|ws| ws.windows.iter().find(|win| win.contains(x, y)))
     }
 }
 

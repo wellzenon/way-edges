@@ -44,7 +44,7 @@ use crate::{
     animation::{AnimationList, ToggleAnimation, ToggleAnimationRc},
     buffer::Buffer,
     mouse_state::{MouseEvent, MouseState},
-    widgets::{button, slide, workspace, wrapbox, WidgetContext},
+    widgets::{button, dock, slide, workspace, wrapbox, WidgetContext},
 };
 
 use super::{draw::DrawCore, window_pop_state::WindowPopState};
@@ -491,6 +491,11 @@ impl Widget {
             config::def::WidgetConf::WrapBox(c) => {
                 ws!(c, config::def::WrapBox, "wrapbox", |b, w, _, _| {
                     Box::new(wrapbox::init_widget(b, w))
+                })
+            }
+            config::def::WidgetConf::Dock(c) => {
+                ws!(c, config::def::Dock, "dock", |b, w, m, s| {
+                    Box::new(dock::init_widget(b, s, w, &m))
                 })
             }
         };

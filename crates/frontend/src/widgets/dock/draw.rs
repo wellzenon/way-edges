@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use backend::dock::icons::IconKey;
 use cairo::{Context, ImageSurface, LinearGradient, Rectangle, SurfaceType};
-use config::def::widgets::wrapbox::dock::{DockConfig, ShowTitles};
+use config::def::widgets::dock::{DockConfig, ShowTitles};
 use cosmic_text::{CacheKey, Color, FontSystem, SwashCache};
 use util::color::cairo_set_color;
 
-use crate::widgets::wrapbox::widgets::dock::layout::DockLayout;
+use super::layout::DockLayout;
 
 fn draw_rounded_rect(
     cr: &Context,
@@ -195,35 +195,48 @@ pub fn paint(
 ) {
     let is_vertical = layout.is_vertical;
 
-    let font_size = config.font_size;
-    let workspace_titles = config.workspace_titles;
+    let wk_font_size = config.workspaces.font_size;
+    let wk_show_titles = config.workspaces.show_titles;
 
-    let show_titles = config.window_button.show_titles;
-    let title_width = config.window_button.title_width as f64;
-    let item_wrap_titles = config.window_button.wrap_titles;
-    let item_font_size = config.window_button.font_size;
-    let item_line_height = config.window_button.line_height;
+    let win_show_titles = config.windows.show_titles;
+    let win_title_width = config.windows.title_width as f64;
+    let win_wrap_titles = config.windows.wrap_titles;
+    let win_font_size = config.windows.font_size;
+    let win_line_height = config.windows.line_height;
 
-    let icon_size = config.window_button.icon_size as f64;
-    let has_icon = show_titles != ShowTitles::Only;
+    let icon_size = config.windows.icon_size as f64;
+    let has_icon = win_show_titles != ShowTitles::Only;
 
     let cr = Context::new(surface).expect("Failed to create Cairo context");
 
-    for ws in &layout.workspaces {
-        let (ws_fg_color, ws_bg_color, ws_border_color) = if ws.is_focused {
+    draw_rounded_rect(
+        &cr,
+        &layout.rect,
+        config.border_radius,
+        config.border_width,
+        config.border_color,
+        config.color,
+    );
+
+    for wksp in &layout.workspaces {
+        let (wk_fg_color, wk_bg_color, wk_border_color) = if wksp.is_focused {
             (
-                config.active_fg_color,
-                config.active_bg_color,
-                config.active_border_color,
+                config.workspaces.active_fg_color,
+                config.workspaces.active_bg_color,
+                config.workspaces.active_border_color,
             )
         } else {
-            (config.fg_color, config.bg_color, config.border_color)
+            (
+                config.workspaces.fg_color,
+                config.workspaces.bg_color,
+                config.workspaces.border_color,
+            )
         };
 
-        if ws.separator_rect.width() > 0.0 {
+        if wksp.separator_rect.width() > 0.0 {
             draw_rounded_rect(
                 &cr,
-                &ws.separator_rect,
+                &wksp.separator_rect,
                 config.separator_radius,
                 0.0,
                 config.separator_color,
@@ -233,22 +246,22 @@ pub fn paint(
 
         draw_rounded_rect(
             &cr,
-            &ws.rect,
-            config.border_radius as f64,
-            config.border_width as f64,
-            ws_border_color,
-            ws_bg_color,
+            &wksp.rect,
+            config.workspaces.border_radius,
+            config.workspaces.border_width,
+            wk_border_color,
+            wk_bg_color,
         );
 
-        if workspace_titles && ws.tag_name.is_some() && ws.tag_rect.width() > 0.0 {
+        if wk_show_titles && wksp.tag_name.is_some() && wksp.tag_rect.width() > 0.0 {
             paint_text(
                 &cr,
-                ws.tag_name.as_deref().unwrap(),
-                &ws.tag_rect,
-                ws_fg_color,
-                font_size,
+                wksp.tag_name.as_deref().unwrap(),
+                &wksp.tag_rect,
+                wk_fg_color,
+                wk_font_size,
                 1.0,
-                &config.font_family.as_family(),
+                &config.workspaces.font_family.as_family(),
                 false,
                 true,
                 font_system,
@@ -257,45 +270,42 @@ pub fn paint(
             );
         }
 
-        for item in &ws.items {
-            if item.app_id.is_none() {
+        for win in &wksp.windows {
+            if win.app_id.is_none() {
                 continue;
             };
 
-            let (bg_color, border_color) = if item.is_focused {
+            let (win_bg_color, win_border_color) = if win.is_focused {
                 (
-                    config.window_button.active_bg_color,
-                    config.window_button.active_border_color,
+                    config.windows.active_bg_color,
+                    config.windows.active_border_color,
                 )
             } else {
-                (
-                    config.window_button.bg_color,
-                    config.window_button.border_color,
-                )
+                (config.windows.bg_color, config.windows.border_color)
             };
 
             // Window Button paint
             draw_rounded_rect(
                 &cr,
-                &item.rect,
-                config.window_button.border_radius as f64,
-                config.window_button.border_width as f64,
-                border_color,
-                bg_color,
+                &win.rect,
+                config.windows.border_radius as f64,
+                config.windows.border_width as f64,
+                win_border_color,
+                win_bg_color,
             );
 
             // 2. DESENHO DO ÍCONE (Tratamento Híbrido SVG/PNG)
 
-            let icon_opacity = if item.is_focused {
-                config.window_button.active_icon_opacity
+            let icon_opacity = if win.is_focused {
+                config.windows.active_icon_opacity
             } else {
-                config.window_button.icon_opacity
+                config.windows.icon_opacity
             };
 
-            let base_color = if item.is_focused {
-                config.window_button.active_fg_color
+            let base_color = if win.is_focused {
+                config.windows.active_fg_color
             } else {
-                config.window_button.fg_color
+                config.windows.fg_color
             };
 
             let text_color = cosmic_text::Color::rgba(
@@ -305,30 +315,30 @@ pub fn paint(
                 (icon_opacity * 255.0) as u8,
             );
 
-            if has_icon && item.icon_rect.width() > 0.0 {
-                if item.has_resolved_icon {
-                    if let Some(icon_surface) = icon_surface_cache.get(&item.icon_key) {
+            if has_icon && win.icon_rect.width() > 0.0 {
+                if win.has_resolved_icon {
+                    if let Some(icon_surface) = icon_surface_cache.get(&win.icon_key) {
                         cr.save().unwrap();
                         if icon_surface.type_() == SurfaceType::Image {
                             cr.set_source_surface(
                                 icon_surface,
-                                item.icon_rect.x(),
-                                item.icon_rect.y(),
+                                win.icon_rect.x(),
+                                win.icon_rect.y(),
                             )
                             .unwrap();
                             cr.paint_with_alpha(icon_opacity).unwrap();
                         } else {
                             cairo_set_color(&cr, text_color);
-                            cr.mask_surface(icon_surface, item.icon_rect.x(), item.icon_rect.y())
+                            cr.mask_surface(icon_surface, win.icon_rect.x(), win.icon_rect.y())
                                 .unwrap();
                         }
                         cr.restore().unwrap();
                     }
                 } else {
-                    let char_icon: String = if !item.fallback_char.is_empty() {
-                        item.fallback_char.to_uppercase().clone()
+                    let char_icon: String = if !win.fallback_char.is_empty() {
+                        win.fallback_char.to_uppercase().clone()
                     } else {
-                        item.title
+                        win.title
                             .as_deref()
                             .and_then(|t| t.chars().next())
                             .unwrap_or('?')
@@ -339,11 +349,11 @@ pub fn paint(
                     paint_text(
                         &cr,
                         &char_icon,
-                        &item.icon_rect,
+                        &win.icon_rect,
                         base_color,
                         icon_size as i32,
                         1.0,
-                        &config.window_button.font_family.as_family(),
+                        &config.windows.font_family.as_family(),
                         false,
                         true,
                         font_system,
@@ -353,9 +363,9 @@ pub fn paint(
                 }
             }
 
-            let has_title = match &config.window_button.show_titles {
+            let has_title = match &config.windows.show_titles {
                 ShowTitles::Always | ShowTitles::Only => true,
-                ShowTitles::Focused if item.is_focused => true,
+                ShowTitles::Focused if win.is_focused => true,
                 _ => false,
             };
 
@@ -364,21 +374,22 @@ pub fn paint(
                 continue;
             }
 
-            let title = item.title.as_deref().unwrap_or("");
+            let title = win.title.as_deref().unwrap_or("");
 
-            if title.is_empty() || title_width <= 0.0 {
+            if title.is_empty() || win_title_width <= 0.0 {
                 continue;
             }
 
+            dbg!(is_vertical);
             paint_text(
                 &cr,
                 title,
-                &item.title_rect,
+                &win.title_rect,
                 base_color,
-                item_font_size,
-                item_line_height,
-                &config.window_button.font_family.as_family(),
-                item_wrap_titles,
+                win_font_size,
+                win_line_height,
+                &config.windows.font_family.as_family(),
+                win_wrap_titles,
                 is_vertical,
                 font_system,
                 swash_cache,

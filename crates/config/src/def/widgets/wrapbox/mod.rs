@@ -1,10 +1,8 @@
-pub mod dock;
 pub mod ring;
 pub mod text;
 pub mod tray;
 
 use cosmic_text::Color;
-use dock::DockConfig;
 use knus::{Decode, DecodeScalar};
 use ring::RingConfig;
 use text::TextConfig;
@@ -190,7 +188,6 @@ pub enum BoxedWidget {
     Ring(RingConfig),
     Text(TextConfig),
     Tray(TrayConfig),
-    Dock(DockConfig),
 }
 
 impl<S: knus::traits::ErrorSpan> knus::Decode<S> for BoxedWidget {
@@ -202,11 +199,10 @@ impl<S: knus::traits::ErrorSpan> knus::Decode<S> for BoxedWidget {
             "ring" => Self::Ring(RingConfig::decode_node(node, ctx)?),
             "text" => Self::Text(TextConfig::decode_node(node, ctx)?),
             "tray" => Self::Tray(TrayConfig::decode_node(node, ctx)?),
-            "dock" => Self::Dock(DockConfig::decode_node(node, ctx)?),
             name => {
                 return Err(knus::errors::DecodeError::unexpected(
                     &node.node_name,
-                    "ring, text, tray or dock",
+                    "ring, text or tray",
                     format!("Unknown widget type: {name}"),
                 ))
             }
