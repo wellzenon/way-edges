@@ -127,6 +127,12 @@ pub struct WindowButton {
     #[schemars(schema_with = "schema_color")]
     pub border_color: Color,
 
+    #[knus(child, default = dt_wb_active_border_color(), unwrap(argument, decode_with = parse_color))]
+    #[serde(default = "dt_wb_active_border_color")]
+    #[serde(deserialize_with = "color_translate")]
+    #[schemars(schema_with = "schema_color")]
+    pub active_border_color: Color,
+
     #[knus(child, default = dt_wb_border_width(), unwrap(argument))]
     #[serde(default = "dt_wb_border_width")]
     pub border_width: f64,
@@ -162,6 +168,7 @@ impl Default for WindowButton {
             bg_color: dt_wb_bg_color(),
             active_bg_color: dt_wb_active_bg_color(),
             border_color: dt_wb_border_color(),
+            active_border_color: dt_wb_active_border_color(),
             border_width: dt_wb_border_width(),
             border_radius: dt_wb_border_radius(),
             gap: dt_wb_gap(),
@@ -222,6 +229,12 @@ pub struct DockConfig {
     #[schemars(schema_with = "schema_color")]
     pub border_color: Color,
 
+    #[knus(child, default = dt_active_border_color(), unwrap(argument, decode_with = parse_color))]
+    #[serde(default = "dt_active_border_color")]
+    #[serde(deserialize_with = "color_translate")]
+    #[schemars(schema_with = "schema_color")]
+    pub active_border_color: Color,
+
     #[knus(child, default = dt_border_width(), unwrap(argument))]
     #[serde(default = "dt_border_width")]
     pub border_width: i32,
@@ -233,6 +246,24 @@ pub struct DockConfig {
     #[knus(child, default = dt_gap(), unwrap(argument))]
     #[serde(default = "dt_gap")]
     pub gap: i32,
+
+    #[knus(child, default = dt_separator_width(), unwrap(argument))]
+    #[serde(default = "dt_separator_width")]
+    pub separator_width: f64,
+
+    #[knus(child, default = dt_separator_margin(), unwrap(argument))]
+    #[serde(default = "dt_separator_margin")]
+    pub separator_margin: f64,
+
+    #[knus(child, default = dt_separator_radius(), unwrap(argument))]
+    #[serde(default = "dt_separator_radius")]
+    pub separator_radius: f64,
+
+    #[knus(child, default = dt_separator_color(), unwrap(argument, decode_with = parse_color))]
+    #[serde(default = "dt_separator_color")]
+    #[serde(deserialize_with = "color_translate")]
+    #[schemars(schema_with = "schema_color")]
+    pub separator_color: Color,
 
     #[knus(child, default = dt_margin())]
     #[serde(default = "dt_margin")]
@@ -255,9 +286,14 @@ impl Default for DockConfig {
             bg_color: dt_bg_color(),
             active_bg_color: dt_active_bg_color(),
             border_color: dt_border_color(),
+            active_border_color: dt_active_border_color(),
             border_width: dt_border_width(),
             border_radius: dt_border_radius(),
             gap: dt_gap(),
+            separator_color: dt_separator_color(),
+            separator_width: dt_separator_width(),
+            separator_margin: dt_separator_margin(),
+            separator_radius: dt_separator_radius(),
             margins: dt_margin(),
             window_button: WindowButton::default(),
         }
@@ -274,23 +310,28 @@ macro_rules! def_fallback {
 }
 
 def_fallback!(dt_font_size, i32, 26);
-def_fallback!(dt_workspace_titles, bool, true);
+def_fallback!(dt_workspace_titles, bool, false);
 def_fallback!(dt_fg_color, Color, Color::rgba(255, 255, 255, 80));
 def_fallback!(dt_active_fg_color, Color, Color::rgba(255, 255, 255, 160));
-def_fallback!(dt_bg_color, Color, Color::rgba(0, 0, 0, 255));
-def_fallback!(dt_active_bg_color, Color, Color::rgba(255, 255, 255, 17));
-def_fallback!(dt_border_color, Color, Color::rgba(0, 0, 0, 255));
-def_fallback!(dt_border_width, i32, 5);
+def_fallback!(dt_bg_color, Color, Color::rgba(0, 0, 0, 0));
+def_fallback!(dt_active_bg_color, Color, Color::rgba(0, 0, 0, 0));
+def_fallback!(dt_border_color, Color, Color::rgba(0, 0, 0, 0));
+def_fallback!(dt_active_border_color, Color, Color::rgba(0, 0, 0, 0));
+def_fallback!(dt_border_width, i32, 0);
 def_fallback!(dt_border_radius, i32, 10);
-def_fallback!(dt_gap, i32, 0);
+def_fallback!(dt_gap, i32, 20);
+def_fallback!(dt_separator_width, f64, 1.0);
+def_fallback!(dt_separator_margin, f64, 6.0);
+def_fallback!(dt_separator_radius, f64, 0.0);
+def_fallback!(dt_separator_color, Color, Color::rgba(255, 255, 255, 50));
 def_fallback!(
     dt_margin,
     NumMargins,
     NumMargins {
-        left: 15,
-        right: 15,
-        top: 10,
-        bottom: 10
+        left: 3,
+        right: 3,
+        top: 3,
+        bottom: 3
     }
 );
 
@@ -304,26 +345,31 @@ def_fallback!(dt_wb_wrap_titles, bool, false);
 def_fallback!(dt_wb_icon_size, f64, 32.0);
 def_fallback!(dt_wb_icon_opacity, f64, 0.5);
 def_fallback!(dt_wb_active_icon_opacity, f64, 1.0);
-def_fallback!(dt_wb_fg_color, Color, Color::rgba(180, 180, 180, 160));
+def_fallback!(dt_wb_fg_color, Color, Color::rgba(255, 255, 255, 80));
 def_fallback!(
     dt_wb_active_fg_color,
     Color,
-    Color::rgba(230, 230, 230, 255)
+    Color::rgba(255, 255, 255, 160)
 );
 def_fallback!(dt_wb_bg_color, Color, Color::rgba(0, 0, 0, 0));
 def_fallback!(dt_wb_active_bg_color, Color, Color::rgba(255, 255, 255, 17));
 def_fallback!(dt_wb_border_color, Color, Color::rgba(0, 0, 0, 0));
-def_fallback!(dt_wb_border_width, f64, 0.0);
-def_fallback!(dt_wb_border_radius, f64, 10.0);
+def_fallback!(
+    dt_wb_active_border_color,
+    Color,
+    Color::rgba(255, 255, 255, 30)
+);
+def_fallback!(dt_wb_border_width, f64, 1.0);
+def_fallback!(dt_wb_border_radius, f64, 5.0);
 def_fallback!(dt_wb_gap, f64, 5.0);
 def_fallback!(
     dt_wb_margin,
     NumMargins,
     NumMargins {
-        left: 10,
-        right: 10,
-        top: 10,
-        bottom: 10
+        left: 5,
+        right: 5,
+        top: 5,
+        bottom: 5
     }
 );
 
@@ -349,9 +395,14 @@ wrap-box {
         active-fg-color "#0000ff"
         active-bg-color "#00ff00"
         border-color "#333333"
+        active-border-color "#333333"
         border-width 2
         border-radius 15
         gap 8
+        separator-width 2.0
+        separator-margin 5.0
+        separator-radius 2.0
+        separator-color "#333333"
         margins {
             left 4
             right 4
@@ -375,6 +426,7 @@ wrap-box {
             bg-color "#000000"
             active-bg-color "#00ff00"
             border-color "#000000"
+            active-border-color "#000000"
             border-width 2
             border-radius 15
             gap 4
@@ -405,9 +457,17 @@ wrap-box {
                 assert_eq!(dock_config.active_bg_color, parse_color("#00ff00").unwrap());
                 assert_eq!(dock_config.bg_color, parse_color("#000000").unwrap());
                 assert_eq!(dock_config.border_color, parse_color("#333333").unwrap());
+                assert_eq!(
+                    dock_config.active_border_color,
+                    parse_color("#333333").unwrap()
+                );
                 assert_eq!(dock_config.border_width, 2);
                 assert_eq!(dock_config.border_radius, 15);
                 assert_eq!(dock_config.gap, 8);
+                assert_eq!(dock_config.separator_width, 2.0);
+                assert_eq!(dock_config.separator_margin, 5.0);
+                assert_eq!(dock_config.separator_radius, 2.0);
+                assert_eq!(dock_config.separator_color, parse_color("#333333").unwrap());
                 assert_eq!(
                     dock_config.margins,
                     NumMargins {
@@ -456,6 +516,10 @@ wrap-box {
                 );
                 assert_eq!(
                     dock_config.window_button.border_color,
+                    parse_color("#000000").unwrap()
+                );
+                assert_eq!(
+                    dock_config.window_button.active_border_color,
                     parse_color("#000000").unwrap()
                 );
                 assert_eq!(dock_config.window_button.border_width, 2.0);

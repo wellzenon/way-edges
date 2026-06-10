@@ -55,11 +55,8 @@ pub struct DockWorkspace {
     pub tag_rect: Rectangle,
     pub tag_name: Option<String>,
     pub is_focused: bool,
+    pub separator_rect: Rectangle,
     pub items: Vec<DockItem>,
-
-    // TODO future global dock with all outputs and ordered by logical position
-    #[allow(dead_code)]
-    pub output: Option<String>,
 }
 
 impl DockWorkspace {
@@ -118,20 +115,16 @@ impl DockLayout {
 
         let ws_vec: Vec<DockWorkspace> = windows
             .chunk_by(|a, b| a.workspace_id == b.workspace_id)
-            .map(|ws| {
+            .enumerate()
+            .map(|(idx, ws)| {
                 let ws_id = ws[0].workspace_id.unwrap_or(0) as i32;
                 let ws_x = current_x;
 
                 current_x += border_width + margins.left;
 
-                let (name, output) = workspaces
+                let name = workspaces
                     .get(&(ws_id as u64))
-                    .map(|w| {
-                        (
-                            w.name.clone().or_else(|| Some(w.idx.to_string())),
-                            w.output.clone(),
-                        )
-                    })
+                    .map(|w| w.name.clone().or_else(|| Some(w.idx.to_string())))
                     .unwrap_or_default();
 
                 let tag_rect = if name.is_some() && workspace_titles {
@@ -147,9 +140,19 @@ impl DockLayout {
                     // y will still swap places in the vertical layout
 
                     let rect = if is_vertical {
-                        Rectangle::new(ws_y, current_x, ws_height, rect_height)
+                        Rectangle::new(
+                            ws_y.round(),
+                            current_x.round(),
+                            ws_height.round(),
+                            rect_height.round(),
+                        )
                     } else {
-                        Rectangle::new(current_x, ws_y, rect_width, ws_height)
+                        Rectangle::new(
+                            current_x.round(),
+                            ws_y.round(),
+                            rect_width.round(),
+                            ws_height.round(),
+                        )
                     };
 
                     current_x +=
@@ -284,6 +287,26 @@ impl DockLayout {
 
                 let ws_rect = verticalize_rect(ws_x, ws_y, ws_width, ws_height, is_vertical);
 
+                let sep_height = ws_height - 2.0 * config.separator_margin;
+                let separator_rect = if config.separator_width > 0.0
+                    && config.separator_width < config.gap as f64
+                    && sep_height > 0.0
+                    && idx > 0
+                {
+                    let sep_x = ws_x - (config.separator_width + gap) / 2.0;
+                    let sep_y = ws_y + config.separator_margin;
+
+                    verticalize_rect(
+                        sep_x,
+                        sep_y,
+                        config.separator_width,
+                        sep_height,
+                        is_vertical,
+                    )
+                } else {
+                    Rectangle::new(0.0, 0.0, 0.0, 0.0)
+                };
+
                 current_x += gap;
 
                 DockWorkspace {
@@ -291,7 +314,7 @@ impl DockLayout {
                     tag_rect,
                     tag_name: name,
                     is_focused: ws_focused,
-                    output,
+                    separator_rect,
                     items,
                 }
             })
@@ -325,10 +348,14 @@ impl DockLayout {
 }
 
 fn verticalize_rect(x: f64, y: f64, w: f64, h: f64, is_vertical: bool) -> Rectangle {
+    let rx = x.round();
+    let ry = y.round();
+    let rw = w.round();
+    let rh = h.round();
     if is_vertical {
-        Rectangle::new(y, x, h, w)
+        Rectangle::new(ry, rx, rh, rw)
     } else {
-        Rectangle::new(x, y, w, h)
+        Rectangle::new(rx, ry, rw, rh)
     }
 }
 

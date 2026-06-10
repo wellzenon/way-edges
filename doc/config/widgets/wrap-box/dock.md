@@ -6,20 +6,25 @@ item "dock" {
     grid-align "center-center"
     font-family "mono"
     font-size 26
-    workspace-titles true
+    workspace-titles false
     fg-color "#ffffff55"
     bg-color "#00000000"
     active-fg-color "#ffffffaa"
-    active-bg-color "#ffffff10"
-    border-color "#000000"
-    border-width 5
+    active-bg-color "#00000000"
+    border-color "#00000000"
+    active-border-color "#00000000"
+    border-width 0
     border-radius 10
-    gap 0
+    gap 20
+    separator-width 1
+    separator-radius 0
+    separator-margin 6
+    separator-color "#444444"
     margins {
-        left 15
-        right 15
-        top 10
-        bottom 10
+        left 3
+        right 3
+        top 3
+        bottom 3
     }
     window-button {
         font-family "mono"
@@ -37,15 +42,16 @@ item "dock" {
         active-fg-color "#dddddd"
         bg-color "#00000000"
         active-bg-color "#ffffff10"
-        border-color "#bbbbbb"
-        border-width 0
-        border-radius 10
+        border-color "#00000000"
+        active-border-color "#bbbbbb"
+        border-width 1
+        border-radius 5
         gap 5
         margins {
-            left 10
-            right 10
-            top 10
-            bottom 10
+            left 5
+            right 5
+            top 5
+            bottom 5
         }
     }
 }
@@ -59,13 +65,18 @@ item "dock" {
 | font-size           | int |
 | workspace-titles    | bool |
 | fg-color            | color |
-| bg-color            | color |
 | active-fg-color     | color |
+| bg-color            | color |
 | active-bg-color     | color |
 | border-color        | color |
+| active-border-color    | color |
 | border-width        | int |
 | border-radius       | int |
 | gap                 | int |
+| separator-width        | int |
+| separator-radius        | int |
+| separator-margin        | int |
+| separator-color        | color |
 | margins             |  |
 
 ## window-button
@@ -87,7 +98,7 @@ item "dock" {
 | active-fg-color     | color |
 | bg-color            | color |
 | active-bg-color     | color |
-| border-color        | color |
+| active-border-color        | color |
 | border-width        | int |
 | border-radius       | int |
 | gap                 | int |
