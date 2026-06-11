@@ -136,9 +136,28 @@ pub struct Windows {
     #[serde(default = "dt_wi_border_width")]
     pub border_width: f64,
 
+    #[knus(child, default = dt_wi_separator_width(), unwrap(argument))]
+    #[serde(default = "dt_wi_separator_width")]
+    pub separator_width: f64,
+
+    #[knus(child, default = dt_wi_separator_margin(), unwrap(argument))]
+    #[serde(default = "dt_wi_separator_margin")]
+    pub separator_margin: f64,
+
+    #[knus(child, default = dt_wi_separator_radius(), unwrap(argument))]
+    #[serde(default = "dt_wi_separator_radius")]
+    pub separator_radius: f64,
+
+    #[knus(child, default = dt_wi_separator_color(), unwrap(argument, decode_with = parse_color))]
+    #[serde(default = "dt_wi_separator_color")]
+    #[serde(deserialize_with = "color_translate")]
+    #[schemars(schema_with = "schema_color")]
+    pub separator_color: Color,
+
     #[knus(child, default = dt_wi_border_radius(), unwrap(argument))]
     #[serde(default = "dt_wi_border_radius")]
     pub border_radius: f64,
+
     #[knus(child, default = dt_wi_gap(), unwrap(argument))]
     #[serde(default = "dt_wi_gap")]
     pub gap: f64,
@@ -170,6 +189,10 @@ impl Default for Windows {
             active_border_color: dt_wi_active_border_color(),
             border_width: dt_wi_border_width(),
             border_radius: dt_wi_border_radius(),
+            separator_color: dt_wi_separator_color(),
+            separator_width: dt_wi_separator_width(),
+            separator_margin: dt_wi_separator_margin(),
+            separator_radius: dt_wi_separator_radius(),
             gap: dt_wi_gap(),
             margins: dt_wi_margin(),
         }
@@ -236,6 +259,24 @@ pub struct Workspaces {
     #[serde(default = "dt_wk_border_radius")]
     pub border_radius: f64,
 
+    #[knus(child, default = dt_wk_separator_width(), unwrap(argument))]
+    #[serde(default = "dt_wk_separator_width")]
+    pub separator_width: f64,
+
+    #[knus(child, default = dt_wk_separator_margin(), unwrap(argument))]
+    #[serde(default = "dt_wk_separator_margin")]
+    pub separator_margin: f64,
+
+    #[knus(child, default = dt_wk_separator_radius(), unwrap(argument))]
+    #[serde(default = "dt_wk_separator_radius")]
+    pub separator_radius: f64,
+
+    #[knus(child, default = dt_wk_separator_color(), unwrap(argument, decode_with = parse_color))]
+    #[serde(default = "dt_wk_separator_color")]
+    #[serde(deserialize_with = "color_translate")]
+    #[schemars(schema_with = "schema_color")]
+    pub separator_color: Color,
+
     #[knus(child, default = dt_wk_gap(), unwrap(argument))]
     #[serde(default = "dt_wk_gap")]
     pub gap: f64,
@@ -259,6 +300,10 @@ impl Default for Workspaces {
             active_border_color: dt_wk_active_border_color(),
             border_width: dt_wk_border_width(),
             border_radius: dt_wk_border_radius(),
+            separator_color: dt_wk_separator_color(),
+            separator_width: dt_wk_separator_width(),
+            separator_margin: dt_wk_separator_margin(),
+            separator_radius: dt_wk_separator_radius(),
             gap: dt_wk_gap(),
             margins: dt_margin(),
         }
@@ -293,28 +338,6 @@ pub struct DockConfig {
     #[serde(default = "dt_border_radius")]
     pub border_radius: f64,
 
-    #[knus(child, default = dt_separator_width(), unwrap(argument))]
-    #[serde(default = "dt_separator_width")]
-    pub separator_width: f64,
-
-    #[knus(child, default = dt_separator_margin(), unwrap(argument))]
-    #[serde(default = "dt_separator_margin")]
-    pub separator_margin: f64,
-
-    #[knus(child, default = dt_separator_radius(), unwrap(argument))]
-    #[serde(default = "dt_separator_radius")]
-    pub separator_radius: f64,
-
-    #[knus(child, default = dt_separator_color(), unwrap(argument, decode_with = parse_color))]
-    #[serde(default = "dt_separator_color")]
-    #[serde(deserialize_with = "color_translate")]
-    #[schemars(schema_with = "schema_color")]
-    pub separator_color: Color,
-
-    #[knus(child, default = dt_gap(), unwrap(argument))]
-    #[serde(default = "dt_gap")]
-    pub gap: f64,
-
     #[knus(child, default = dt_margin())]
     #[serde(default = "dt_margin")]
     pub margins: NumMargins,
@@ -336,11 +359,6 @@ impl Default for DockConfig {
             border_color: dt_border_color(),
             border_width: dt_border_width(),
             border_radius: dt_border_radius(),
-            separator_color: dt_separator_color(),
-            separator_width: dt_separator_width(),
-            separator_margin: dt_separator_margin(),
-            separator_radius: dt_separator_radius(),
-            gap: dt_gap(),
             margins: dt_margin(),
             workspaces: Workspaces::default(),
             windows: Windows::default(),
@@ -360,11 +378,6 @@ def_fallback!(dt_color, Color, Color::rgba(0, 0, 0, 255));
 def_fallback!(dt_border_color, Color, Color::rgba(0, 0, 0, 0));
 def_fallback!(dt_border_width, f64, 0.0);
 def_fallback!(dt_border_radius, f64, 10.0);
-def_fallback!(dt_separator_width, f64, 1.0);
-def_fallback!(dt_separator_margin, f64, 6.0);
-def_fallback!(dt_separator_radius, f64, 0.0);
-def_fallback!(dt_separator_color, Color, Color::rgba(255, 255, 255, 50));
-def_fallback!(dt_gap, f64, 20.0);
 def_fallback!(
     dt_margin,
     NumMargins,
@@ -391,6 +404,10 @@ def_fallback!(dt_wk_border_color, Color, Color::rgba(0, 0, 0, 0));
 def_fallback!(dt_wk_active_border_color, Color, Color::rgba(0, 0, 0, 0));
 def_fallback!(dt_wk_border_width, f64, 0.0);
 def_fallback!(dt_wk_border_radius, f64, 10.0);
+def_fallback!(dt_wk_separator_width, f64, 1.0);
+def_fallback!(dt_wk_separator_margin, f64, 6.0);
+def_fallback!(dt_wk_separator_radius, f64, 0.0);
+def_fallback!(dt_wk_separator_color, Color, Color::rgba(255, 255, 255, 50));
 def_fallback!(dt_wk_gap, f64, 20.0);
 def_fallback!(
     dt_wk_margin,
@@ -429,6 +446,10 @@ def_fallback!(
 );
 def_fallback!(dt_wi_border_width, f64, 1.0);
 def_fallback!(dt_wi_border_radius, f64, 5.0);
+def_fallback!(dt_wi_separator_width, f64, 0.0);
+def_fallback!(dt_wi_separator_margin, f64, 6.0);
+def_fallback!(dt_wi_separator_radius, f64, 0.0);
+def_fallback!(dt_wi_separator_color, Color, Color::rgba(255, 255, 255, 50));
 def_fallback!(dt_wi_gap, f64, 5.0);
 def_fallback!(
     dt_wi_margin,
@@ -455,11 +476,6 @@ dock {
     border-color "#111111"
     border-width 2
     border-radius 15
-    separator-width 2.0
-    separator-margin 5.0
-    separator-radius 2.0
-    separator-color "#333333"
-    gap 8
     margins {
         left 4
         right 4
@@ -478,6 +494,10 @@ dock {
         active-border-color "#222222"
         border-width 2
         border-radius 15
+        separator-width 2.0
+        separator-margin 5.0
+        separator-radius 2.0
+        separator-color "#333333"
         gap 8
         margins {
             left 4
@@ -506,6 +526,10 @@ dock {
         active-border-color "#000000"
         border-width 2
         border-radius 15
+        separator-width 2.0
+        separator-margin 5.0
+        separator-radius 2.0
+        separator-color "#333333"
         gap 4
         margins {
             left 2
@@ -524,11 +548,6 @@ dock {
             assert_eq!(dock_config.border_color, parse_color("#111111").unwrap());
             assert_eq!(dock_config.border_width, 2.0);
             assert_eq!(dock_config.border_radius, 15.0);
-            assert_eq!(dock_config.separator_width, 2.0);
-            assert_eq!(dock_config.separator_margin, 5.0);
-            assert_eq!(dock_config.separator_radius, 2.0);
-            assert_eq!(dock_config.separator_color, parse_color("#333333").unwrap());
-            assert_eq!(dock_config.gap, 8.0);
             assert_eq!(
                 dock_config.margins,
                 NumMargins {
@@ -568,6 +587,13 @@ dock {
             );
             assert_eq!(dock_config.workspaces.border_width, 2.0);
             assert_eq!(dock_config.workspaces.border_radius, 15.0);
+            assert_eq!(dock_config.workspaces.separator_width, 2.0);
+            assert_eq!(dock_config.workspaces.separator_margin, 5.0);
+            assert_eq!(dock_config.workspaces.separator_radius, 2.0);
+            assert_eq!(
+                dock_config.workspaces.separator_color,
+                parse_color("#333333").unwrap()
+            );
             assert_eq!(dock_config.workspaces.gap, 8.0);
             assert_eq!(
                 dock_config.workspaces.margins,
@@ -619,6 +645,13 @@ dock {
             );
             assert_eq!(dock_config.windows.border_width, 2.0);
             assert_eq!(dock_config.windows.border_radius, 15.0);
+            assert_eq!(dock_config.windows.separator_width, 2.0);
+            assert_eq!(dock_config.windows.separator_margin, 5.0);
+            assert_eq!(dock_config.windows.separator_radius, 2.0);
+            assert_eq!(
+                dock_config.windows.separator_color,
+                parse_color("#333333").unwrap()
+            );
             assert_eq!(dock_config.windows.gap, 4.0);
             assert_eq!(
                 dock_config.windows.margins,

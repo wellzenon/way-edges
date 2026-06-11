@@ -237,10 +237,10 @@ pub fn paint(
             draw_rounded_rect(
                 &cr,
                 &wksp.separator_rect,
-                config.separator_radius,
+                config.workspaces.separator_radius,
                 0.0,
-                config.separator_color,
-                config.separator_color,
+                config.workspaces.separator_color,
+                config.workspaces.separator_color,
             );
         }
 
@@ -283,6 +283,17 @@ pub fn paint(
             } else {
                 (config.windows.bg_color, config.windows.border_color)
             };
+
+            if win.separator_rect.width() > 0.0 {
+                draw_rounded_rect(
+                    &cr,
+                    &win.separator_rect,
+                    config.windows.separator_radius,
+                    0.0,
+                    config.windows.separator_color,
+                    config.windows.separator_color,
+                );
+            }
 
             // Window Button paint
             draw_rounded_rect(

@@ -31,6 +31,7 @@ pub struct DockWindow {
     pub rect: Rectangle,
     pub icon_rect: Rectangle,
     pub title_rect: Rectangle,
+    pub separator_rect: Rectangle,
     pub id: f64,
     pub app_id: Option<String>,
     pub title: Option<String>,
@@ -92,7 +93,6 @@ impl DockLayout {
         is_vertical: bool,
     ) -> Self {
         let dock_border_width = config.border_width;
-        let dock_gap = config.gap;
         let dock_margins: MarginsF64 = (&config.margins).into();
 
         let wk_border_width = config.workspaces.border_width;
@@ -104,8 +104,8 @@ impl DockLayout {
 
         let win_y = wk_y + wk_border_width + wk_margins.top;
         let win_border_width = config.windows.border_width;
-        let win_gap = config.windows.gap;
         let win_margins: MarginsF64 = (&config.windows.margins).into();
+        let win_gap = config.windows.gap;
 
         let icon_size = config.windows.icon_size;
         let icon_theme = &config.windows.icon_theme;
@@ -178,7 +178,8 @@ impl DockLayout {
 
                 let windows: Vec<DockWindow> = wins
                     .iter()
-                    .map(|win| {
+                    .enumerate()
+                    .map(|(win_idx, win)| {
                         wk_focused = wk_focused || win.is_focused;
 
                         let has_title = match win_show_titles {
@@ -251,7 +252,7 @@ impl DockLayout {
 
                         let title_rect = if has_title {
                             if is_icon_enabled && icon_rect.width() > 0.0 {
-                                current_main_axis += win_gap;
+                                current_main_axis += win_margins.left;
                             }
                             let rec = verticalize_rect(
                                 current_main_axis,
@@ -274,12 +275,33 @@ impl DockLayout {
                         let win_rec =
                             verticalize_rect(win_x, win_y, win_width, win_height, is_vertical);
 
-                        current_main_axis += wk_gap;
+                        let win_sep_height = win_height - 2.0 * config.windows.separator_margin;
+                        let win_separator_rect = if config.windows.separator_width > 0.0
+                            && config.windows.separator_width < win_gap as f64
+                            && win_sep_height > 0.0
+                            && win_idx > 0
+                        {
+                            let sep_x = win_x - (config.windows.separator_width + win_gap) / 2.0;
+                            let sep_y = win_y + config.windows.separator_margin;
+
+                            verticalize_rect(
+                                sep_x,
+                                sep_y,
+                                config.windows.separator_width,
+                                win_sep_height,
+                                is_vertical,
+                            )
+                        } else {
+                            Rectangle::new(0.0, 0.0, 0.0, 0.0)
+                        };
+
+                        current_main_axis += win_gap;
 
                         DockWindow {
                             rect: win_rec,
                             icon_rect,
                             title_rect,
+                            separator_rect: win_separator_rect,
                             id: win.id as f64,
                             app_id: win.app_id.clone(),
                             title: win.title.clone(),
@@ -291,47 +313,47 @@ impl DockLayout {
                     })
                     .collect();
 
-                current_main_axis -= wk_gap; // last item has no gap
+                current_main_axis -= win_gap; // last item has no gap
                 current_main_axis += wk_margins.right + wk_border_width;
 
                 let wk_width = current_main_axis - wk_x;
 
                 let wk_rect = verticalize_rect(wk_x, wk_y, wk_width, wk_height, is_vertical);
 
-                let sep_height = wk_height - 2.0 * config.separator_margin;
-                let separator_rect = if config.separator_width > 0.0
-                    && config.separator_width < config.gap as f64
-                    && sep_height > 0.0
+                let wk_sep_height = wk_height - 2.0 * config.workspaces.separator_margin;
+                let wk_separator_rect = if config.workspaces.separator_width > 0.0
+                    && config.workspaces.separator_width < wk_gap as f64
+                    && wk_sep_height > 0.0
                     && idx > 0
                 {
-                    let sep_x = wk_x - (config.separator_width + dock_gap) / 2.0;
-                    let sep_y = wk_y + config.separator_margin;
+                    let sep_x = wk_x - (config.workspaces.separator_width + wk_gap) / 2.0;
+                    let sep_y = wk_y + config.workspaces.separator_margin;
 
                     verticalize_rect(
                         sep_x,
                         sep_y,
-                        config.separator_width,
-                        sep_height,
+                        config.workspaces.separator_width,
+                        wk_sep_height,
                         is_vertical,
                     )
                 } else {
                     Rectangle::new(0.0, 0.0, 0.0, 0.0)
                 };
 
-                current_main_axis += dock_gap;
+                current_main_axis += wk_gap;
 
                 DockWorkspace {
                     rect: wk_rect,
                     tag_rect,
                     tag_name: name,
                     is_focused: wk_focused,
-                    separator_rect,
+                    separator_rect: wk_separator_rect,
                     windows,
                 }
             })
             .collect();
 
-        current_main_axis -= dock_gap; // last workspace has no gap
+        current_main_axis -= wk_gap; // last workspace has no gap
         current_main_axis += dock_margins.right + dock_border_width;
 
         let dock_rect = verticalize_rect(0.0, 0.0, current_main_axis, dock_height, is_vertical);
